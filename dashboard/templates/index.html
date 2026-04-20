@@ -1,0 +1,888 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div x-data="dashboard()" x-init="init()" class="space-y-8">
+
+  <!-- ПАНЕЛЬ ДЕЙСТВИЙ -->
+  <div class="flex items-center justify-between">
+    <p class="text-xs text-gray-500">
+      Данные автоматически обновляются каждые 3 секунды.
+      <span x-show="lastRefreshAt">Последнее обновление: <span x-text="lastRefreshAt" class="font-mono"></span></span>
+    </p>
+    <button @click="refresh()" class="btn btn-secondary text-sm" :disabled="refreshing" title="Обновить все данные на странице прямо сейчас">
+      <span x-show="!refreshing">🔄 Обновить</span>
+      <span x-show="refreshing" x-cloak>⏳ Обновляю…</span>
+    </button>
+  </div>
+
+  <!-- ОТКРЫТЫЕ СЕССИИ (все проекты) -->
+  <section>
+    <div class="flex items-baseline gap-3 mb-3 flex-wrap">
+      <h2 class="text-xl font-semibold" title="Все открытые сейчас сессии Claude Code во всех проектах. 🟢 живая — транскрипт обновляется. 🟡 закрыта — но не была сохранена (бывает при /clear в VSCode).">
+        🔴 Открытые сессии
+        <span class="text-sm text-gray-500 font-normal" x-text="'(' + activeSessions.length + ')'"></span>
+      </h2>
+      <!-- Сводка по проектам -->
+      <div class="flex items-center gap-2 flex-wrap text-xs" x-show="activeSessionsByProject.length > 0">
+        <template x-for="g in activeSessionsByProject" :key="g.key">
+          <span class="badge" :class="g.isUnassigned ? 'badge-gray' : 'badge-blue'"
+                :title="g.isUnassigned ? 'Сессии в папках, не привязанных ни к одному проекту' : ('Открытые сессии в проекте ' + g.label)">
+            <span x-text="(g.isUnassigned ? '📤 ' : '🗂 ') + g.label"></span>
+            <span class="ml-1 font-semibold" x-text="g.sessions.length"></span>
+          </span>
+        </template>
+      </div>
+    </div>
+    <template x-if="activeSessions.length === 0">
+      <p class="text-sm text-gray-500">Сейчас ни одна сессия Claude Code не открыта. Запусти <code>claude</code> в любой папке — она появится здесь.</p>
+    </template>
+
+    <!-- Список сессий сгруппирован по проектам -->
+    <div class="space-y-4">
+      <template x-for="g in activeSessionsByProject" :key="g.key">
+        <div>
+          <h3 class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1 pl-1 flex items-center gap-2">
+            <template x-if="!g.isUnassigned">
+              <a :href="'/project/' + encodeURIComponent(g.label)" class="hover:text-blue-600">🗂 <span x-text="g.label"></span></a>
+            </template>
+            <template x-if="g.isUnassigned">
+              <span>📤 Непривязанные</span>
+            </template>
+            <span class="text-gray-400 font-normal" x-text="'— ' + g.sessions.length + (g.sessions.length === 1 ? ' сессия' : ' сессий')"></span>
+          </h3>
+          <div class="space-y-1">
+            <template x-for="s in g.sessions" :key="s.sid">
+              <div class="bg-white rounded border border-gray-200 p-2 flex items-center gap-2 text-sm">
+                <span class="badge" :class="s.alive ? 'badge-green' : 'badge-yellow'"
+                      :title="s.alive ? 'Транскрипт обновлялся за последние 30 секунд — сессия живая' : 'Транскрипт не обновляется 30+ секунд — возможно, Claude Code закрыт. Жми «🛟 Сохранить сейчас», чтобы принудительно сдампить транскрипт в raw/chats/.'"
+                      x-text="s.alive ? '🟢 живая' : '🟡 похоже закрыта'"></span>
+                <span class="font-mono text-xs" :title="'Полный идентификатор сессии: ' + s.sid" x-text="s.sid_short"></span>
+                <span class="font-mono text-xs text-gray-500 flex-1 truncate" :title="'Папка Claude Code: ' + s.cwd_raw" x-text="s.cwd_raw"></span>
+                <span class="text-xs text-gray-500" :title="'Стартовала: ' + s.started_at" x-text="formatAge(s.age_sec) + ' назад'"></span>
+                <button x-show="!s.alive" @click="startDump(s)" class="btn btn-secondary text-xs"
+                        :title="s.project ? ('Сохранить транскрипт в ' + s.project + '/raw/chats/') : 'Выбрать проект для сохранения (сейчас сессия ни к чему не привязана)'">🛟 Сохранить сейчас</button>
+              </div>
+            </template>
+          </div>
+        </div>
+      </template>
+    </div>
+  </section>
+
+  <!-- ПРОЕКТЫ -->
+  <section>
+    <div class="flex items-center justify-between mb-4">
+      <h2 class="text-xl font-semibold">Проекты</h2>
+      <a href="/settings#new-project" class="btn btn-secondary" title="Открыть страницу настроек и создать новый проект">+ Новый проект</a>
+    </div>
+
+    <template x-if="loading">
+      <p class="text-sm text-gray-500">Загрузка проектов…</p>
+    </template>
+    <template x-if="!loading && projects.length === 0">
+      <p class="text-sm text-gray-500">Ещё нет проектов. Нажми <strong>«+ Новый проект»</strong> справа сверху — откроется страница настроек, где можно создать первый.</p>
+    </template>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+      <template x-for="p in projects" :key="p.name">
+        <div class="bg-white rounded-lg border border-gray-200 p-4 shadow-sm hover:shadow transition">
+
+          <div class="flex items-start justify-between mb-2">
+            <div class="flex items-center gap-2">
+              <span class="text-xl">🗂</span>
+              <a :href="'/project/' + encodeURIComponent(p.name)" class="font-semibold hover:text-blue-600 transition" x-text="p.name"></a>
+            </div>
+            <div class="flex items-center gap-1">
+              <!-- toggle auto/manual -->
+              <button @click="toggleAuto(p)" class="badge cursor-pointer select-none"
+                      :class="p.auto_ingest ? 'badge-green' : 'badge-gray'"
+                      :title="p.auto_ingest ? 'Авто-режим включён (auto_ingest=true): новые диалоги Claude Code автоматически превратятся в страницы базы знаний. Клик — переключить.' : 'Ручной режим (auto_ingest=false): новые диалоги только сохраняются, обработка — по кнопке «Обработать». Клик — переключить.'">
+                <span x-text="p.auto_ingest ? '🤖 Авто' : '🧑 Вручную'"></span>
+              </button>
+              <a :href="'/project/' + encodeURIComponent(p.name)"
+                 class="badge badge-blue cursor-pointer select-none"
+                 title="Открыть страницу проекта с деталями">→</a>
+            </div>
+          </div>
+
+          <dl class="text-sm text-gray-700 space-y-1 mb-3">
+            <div class="flex justify-between" title="Количество сохранённых диалогов Claude Code в raw/chats/ этого проекта">
+              <dt class="text-gray-500">📥 Сохранено диалогов:</dt>
+              <dd x-text="p.chats_count"></dd>
+            </div>
+            <div class="flex justify-between" title="Количество страниц в wiki/ — entities (сущности), concepts (концепции), sources (саммари источников)">
+              <dt class="text-gray-500">📚 Страниц базы знаний:</dt>
+              <dd x-text="p.wiki_pages_count"></dd>
+            </div>
+            <div class="flex justify-between items-start" title="Когда последний раз прогнали проверку связей между страницами (lint)">
+              <dt class="text-gray-500">🧹 Последняя проверка:</dt>
+              <dd x-text="p.last_lint_at || 'никогда'" class="text-xs text-gray-600"></dd>
+            </div>
+            <div class="flex justify-between items-start" title="Автоматическая проверка по расписанию (cron). Клик — настроить.">
+              <dt class="text-gray-500">⏰ Авто-проверка:</dt>
+              <dd>
+                <button @click="editingSchedule[p.name] = !editingSchedule[p.name]"
+                        class="text-xs text-blue-600 hover:text-blue-800 cursor-pointer font-mono"
+                        :title="p.lint_schedule ? 'Изменить cron-расписание' : 'Настроить cron-расписание'">
+                  <span x-text="p.lint_schedule || '— не задано —'"></span>
+                </button>
+              </dd>
+            </div>
+            <!-- Инжект-контекста на SessionStart -->
+            <div class="flex justify-between items-start" x-show="p.context_injection" title="Что Claude увидит при старте каждой сессии: index.md + хвост log.md. Лимит настраивается на карточке (5-25k символов).">
+              <dt class="text-gray-500">💉 Контекст для Claude:</dt>
+              <dd class="flex items-center gap-1">
+                <a :href="'/project/' + encodeURIComponent(p.name) + '#inject'"
+                   class="badge cursor-pointer text-xs"
+                   :class="contextBadgeClass(p.context_injection)"
+                   :title="contextTitle(p.context_injection)">
+                  <span x-text="formatBytes(p.context_injection?.raw_size || 0)"></span>
+                  <span>/</span>
+                  <span x-text="formatBytes(p.context_injection?.limit || 0)"></span>
+                  <span x-show="p.context_injection?.truncated" class="ml-1">⚠</span>
+                </a>
+                <select :value="p.context_limit || 10000"
+                        @change="saveContextLimit(p, $event.target.value)"
+                        class="border rounded px-1 py-0.5 text-xs font-mono bg-white cursor-pointer"
+                        title="Лимит инжекта контекста в SessionStart. Больше — больше памяти у Claude, но больше трат токенов каждой сессии.">
+                  <option value="5000">5k</option>
+                  <option value="10000">10k</option>
+                  <option value="15000">15k</option>
+                  <option value="20000">20k</option>
+                  <option value="25000">25k</option>
+                </select>
+              </dd>
+            </div>
+          </dl>
+
+          <!-- inline cron editor -->
+          <div x-show="editingSchedule[p.name]" x-cloak class="mb-3 p-3 bg-blue-50 rounded border border-blue-200 space-y-2">
+            <div class="text-xs font-medium text-gray-700">🧙 Настроить расписание авто-проверки:</div>
+
+            <!-- Режим -->
+            <div class="flex items-center gap-2 text-xs">
+              <label class="flex items-center gap-1 cursor-pointer">
+                <input type="radio" :name="'cron-mode-' + p.name" value="daily" x-model="cronDraft[p.name].mode" @change="cronFromWizard(p.name)">
+                каждый день
+              </label>
+              <label class="flex items-center gap-1 cursor-pointer">
+                <input type="radio" :name="'cron-mode-' + p.name" value="weekly" x-model="cronDraft[p.name].mode" @change="cronFromWizard(p.name)">
+                раз в неделю
+              </label>
+              <label class="flex items-center gap-1 cursor-pointer">
+                <input type="radio" :name="'cron-mode-' + p.name" value="hourly" x-model="cronDraft[p.name].mode" @change="cronFromWizard(p.name)">
+                каждые N часов
+              </label>
+              <label class="flex items-center gap-1 cursor-pointer">
+                <input type="radio" :name="'cron-mode-' + p.name" value="custom" x-model="cronDraft[p.name].mode">
+                своё cron
+              </label>
+            </div>
+
+            <!-- Поля для режимов -->
+            <div class="flex items-center gap-2 text-xs" x-show="cronDraft[p.name].mode === 'daily'">
+              <span>в</span>
+              <input type="time" x-model="cronDraft[p.name].time" @change="cronFromWizard(p.name)"
+                     class="border rounded px-2 py-1">
+            </div>
+            <div class="flex items-center gap-2 text-xs" x-show="cronDraft[p.name].mode === 'weekly'">
+              <select x-model="cronDraft[p.name].weekday" @change="cronFromWizard(p.name)" class="border rounded px-2 py-1">
+                <option value="1">понедельник</option>
+                <option value="2">вторник</option>
+                <option value="3">среда</option>
+                <option value="4">четверг</option>
+                <option value="5">пятница</option>
+                <option value="6">суббота</option>
+                <option value="0">воскресенье</option>
+              </select>
+              <span>в</span>
+              <input type="time" x-model="cronDraft[p.name].time" @change="cronFromWizard(p.name)"
+                     class="border rounded px-2 py-1">
+            </div>
+            <div class="flex items-center gap-2 text-xs" x-show="cronDraft[p.name].mode === 'hourly'">
+              <span>каждые</span>
+              <input type="number" min="1" max="23" x-model.number="cronDraft[p.name].everyHours" @change="cronFromWizard(p.name)"
+                     class="border rounded px-2 py-1 w-16">
+              <span>часов</span>
+            </div>
+
+            <!-- Предпросмотр/редактирование cron-строки -->
+            <div class="flex items-center gap-1">
+              <label class="text-xs text-gray-500 w-16">cron:</label>
+              <input type="text" x-model="scheduleDraft[p.name]"
+                     class="flex-1 border rounded px-2 py-1 text-xs font-mono"
+                     placeholder="0 22 * * *"
+                     title="Формат: минуты часы день-месяца месяц день-недели. Редактируется вручную только в режиме «своё cron».">
+              <button @click="saveSchedule(p)" class="btn btn-primary text-xs">💾 Сохранить</button>
+              <button @click="clearSchedule(p)" class="btn btn-secondary text-xs" title="Убрать расписание (отключить авто-проверку)">🗑 Убрать</button>
+              <button @click="editingSchedule[p.name] = false" class="btn btn-secondary text-xs">Отмена</button>
+            </div>
+          </div>
+
+          <div class="flex items-center gap-2 flex-wrap">
+            <button @click="promptIngest(p.name)" class="btn btn-primary text-sm" :disabled="busy(p.name)"
+                    title="Обработать (ingest) файл: Claude прочитает документ/диалог и создаст страницы в базе знаний. Спросит путь к файлу.">
+              <span x-show="!busy(p.name)">📥 Обработать</span>
+              <span x-show="busy(p.name) === 'ingest'">⏳ Обрабатываю…</span>
+            </button>
+            <button @click="runLint(p.name, false)" class="btn btn-secondary text-sm" :disabled="busy(p.name)"
+                    title="Проверить (lint) здоровье базы знаний: битые wikilinks, страницы-сироты, устаревшие страницы. Быстро, без обращения к Claude.">
+              <span x-show="busy(p.name) !== 'lint'">🔍 Проверить</span>
+              <span x-show="busy(p.name) === 'lint'">⏳ Проверяю…</span>
+            </button>
+            <button @click="runLint(p.name, true)" class="btn btn-secondary text-sm" :disabled="busy(p.name)"
+                    title="Глубокая проверка (lint + семантический анализ через claude -p): помимо структурных ошибок ищет противоречия между страницами. Медленно (1-3 минуты).">
+              🧠 Глубокая проверка
+            </button>
+          </div>
+        </div>
+      </template>
+    </div>
+  </section>
+
+  <!-- РАСПИСАНИЕ (следующие запуски) -->
+  <section x-show="schedules.length > 0">
+    <h2 class="text-xl font-semibold mb-3" title="Проекты с авто-проверкой по cron-расписанию">⏰ Авто-проверки по расписанию</h2>
+    <div class="bg-white rounded-lg border border-gray-200 p-3 text-sm">
+      <template x-for="s in schedules" :key="s.id">
+        <div class="flex items-center gap-3 py-1">
+          <span class="badge badge-blue" x-text="s.name"></span>
+          <span class="text-gray-500">следующий запуск:</span>
+          <span class="font-mono text-xs" x-text="s.next_run || '—'"></span>
+        </div>
+      </template>
+    </div>
+  </section>
+
+  <!-- UNASSIGNED -->
+  <section>
+    <h2 class="text-xl font-semibold mb-4" title="Сессии Claude Code из папок, не привязанных ни к одному проекту. Их можно привязать к проекту или удалить.">
+      📤 Непривязанные сессии <span class="text-gray-400 text-sm font-normal">(unassigned)</span>
+      <span class="text-sm text-gray-500 font-normal" x-text="'(' + unassigned.length + ')'"></span>
+    </h2>
+    <template x-if="unassigned.length === 0">
+      <p class="text-sm text-gray-500">Пока пусто. Когда запустишь Claude Code в папке, которая не совпадает ни с одним <code title="Шаблоны папок проекта">cwd_patterns</code>, транскрипт диалога попадёт сюда — можно будет привязать к любому из проектов.</p>
+    </template>
+    <div class="space-y-2">
+      <template x-for="u in unassigned" :key="u.path">
+        <div class="bg-white rounded-lg border border-gray-200 p-3 shadow-sm">
+          <div class="flex items-start justify-between gap-2">
+            <div class="flex-1 min-w-0">
+              <div class="flex items-center gap-2 text-sm">
+                <span>📝</span>
+                <span class="font-mono text-xs truncate" x-text="u.name"></span>
+              </div>
+              <p class="text-xs text-gray-500 mt-1">
+                Папка: <span class="font-mono" x-text="u.folder"></span>
+                · <span x-text="u.mtime"></span>
+                · <span x-text="formatSize(u.size)"></span>
+              </p>
+            </div>
+            <div class="flex items-center gap-2 shrink-0">
+              <button @click="togglePreview(u.path)" class="btn btn-secondary text-xs" title="Посмотреть первые 2000 символов диалога">👁 Посмотреть</button>
+              <select x-model="assignTargets[u.path]" class="text-xs border rounded px-2 py-1" title="К какому проекту привязать эту сессию">
+                <option value="">— выбери проект —</option>
+                <template x-for="p in projects" :key="p.name">
+                  <option :value="p.name" x-text="p.name"></option>
+                </template>
+              </select>
+              <button @click="assignChat(u.path)" class="btn btn-primary text-xs" :disabled="!assignTargets[u.path]"
+                      title="Переместить файл в raw/chats/ выбранного проекта">
+                ➜ Привязать
+              </button>
+              <button @click="deleteChat(u.path)" class="btn btn-danger text-xs" title="Удалить файл навсегда">✕ Удалить</button>
+            </div>
+          </div>
+          <!-- preview -->
+          <div x-show="previews[u.path]" x-cloak class="mt-2 p-2 bg-gray-50 rounded border border-gray-200 text-xs font-mono max-h-64 overflow-auto">
+            <pre x-text="previews[u.path]"></pre>
+          </div>
+        </div>
+      </template>
+    </div>
+  </section>
+
+  <!-- СТАТУС ЗДОРОВЬЯ СИСТЕМЫ -->
+  <section x-show="systemStatus" x-cloak>
+    <div class="bg-white rounded-lg border shadow-sm p-4"
+         :class="systemStatus?.overall === 'error' ? 'border-red-300 bg-red-50' : (systemStatus?.overall === 'warn' ? 'border-yellow-300 bg-yellow-50' : 'border-green-200 bg-green-50')">
+      <div class="flex items-center justify-between mb-2">
+        <h3 class="text-lg font-semibold flex items-center gap-2">
+          <template x-if="systemStatus?.overall === 'ok'"><span>✅ Всё работает</span></template>
+          <template x-if="systemStatus?.overall === 'warn'"><span>⚠️ Есть замечания</span></template>
+          <template x-if="systemStatus?.overall === 'error'"><span>🚨 Есть проблемы</span></template>
+        </h3>
+        <button @click="showHealthDetails = !showHealthDetails" class="btn btn-secondary text-xs"
+                x-text="showHealthDetails ? '▲ Скрыть' : '▼ Подробнее'"></button>
+      </div>
+      <div x-show="showHealthDetails" x-cloak class="space-y-1 mt-3 pt-3 border-t">
+        <template x-for="c in (systemStatus?.checks || [])" :key="c.id">
+          <div class="flex items-start gap-2 text-sm">
+            <span class="text-base"
+                  x-text="c.status === 'ok' ? '✅' : (c.status === 'warn' ? '⚠️' : '❌')"></span>
+            <div class="flex-1">
+              <div class="font-medium" x-text="c.label"></div>
+              <div class="text-xs text-gray-600" x-text="c.detail"></div>
+            </div>
+          </div>
+        </template>
+      </div>
+    </div>
+  </section>
+
+  <!-- СТАТИСТИКА ЗА СЕГОДНЯ -->
+  <section x-show="todayStats" x-cloak>
+    <h3 class="text-sm font-semibold text-gray-600 uppercase mb-2 tracking-wide">📊 За сегодня</h3>
+    <div class="grid grid-cols-3 gap-3">
+      <div class="bg-white rounded-lg border border-gray-200 p-3" title="Сколько диалогов Claude Code сохранено сегодня (по всем проектам + непривязанные)">
+        <p class="text-xs text-gray-500 mb-1">📥 Сохранено диалогов</p>
+        <p class="text-2xl font-semibold" x-text="todayStats?.sessions_saved || 0"></p>
+      </div>
+      <div class="bg-white rounded-lg border border-gray-200 p-3" title="Сколько wiki-страниц создано или обновлено сегодня во всех проектах">
+        <p class="text-xs text-gray-500 mb-1">📚 Новых страниц</p>
+        <p class="text-2xl font-semibold" x-text="todayStats?.wiki_pages_created || 0"></p>
+      </div>
+      <div class="bg-white rounded-lg border border-gray-200 p-3" title="Сколько операций (обработок и проверок) запущено сегодня">
+        <p class="text-xs text-gray-500 mb-1">🔧 Операций</p>
+        <p class="text-2xl font-semibold" x-text="todayStats?.jobs_today || 0"></p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ОПЕРАЦИИ -->
+  <section>
+    <div class="flex items-center justify-between mb-3">
+      <h2 class="text-xl font-semibold" title="История обработок и проверок: кто, когда, с каким результатом">
+        🔧 Последние операции
+        <span class="text-sm text-gray-500 font-normal"
+              x-text="'(' + filteredJobs.length + ' / ' + jobs.length + ')'"></span>
+      </h2>
+      <div class="flex items-center gap-2 text-xs">
+        <select x-model="jobFilter.project" class="border rounded px-2 py-1" title="Фильтр: какой проект">
+          <option value="">все проекты</option>
+          <template x-for="p in projects" :key="p.name">
+            <option :value="p.name" x-text="p.name"></option>
+          </template>
+        </select>
+        <select x-model="jobFilter.type" class="border rounded px-2 py-1" title="Фильтр: тип операции">
+          <option value="">любая операция</option>
+          <option value="ingest">📥 обработка (ingest)</option>
+          <option value="lint">🔍 проверка (lint)</option>
+        </select>
+        <select x-model="jobFilter.trigger" class="border rounded px-2 py-1" title="Фильтр: как была запущена операция">
+          <option value="">любой запуск</option>
+          <option value="manual">🧑 вручную</option>
+          <option value="auto">🤖 автоматически</option>
+          <option value="schedule">⏰ по расписанию</option>
+        </select>
+        <select x-model="jobFilter.status" class="border rounded px-2 py-1" title="Фильтр: состояние">
+          <option value="">любое состояние</option>
+          <option value="running">⏳ идёт</option>
+          <option value="done">✅ готово</option>
+          <option value="failed">❌ ошибка</option>
+        </select>
+        <button @click="jobFilter={project:'',type:'',trigger:'',status:''}"
+                class="btn btn-secondary text-xs" title="Сбросить фильтры">✕</button>
+      </div>
+    </div>
+
+    <template x-if="filteredJobs.length === 0 && jobs.length > 0">
+      <p class="text-sm text-gray-500">Ничего не подошло под фильтры.</p>
+    </template>
+    <template x-if="jobs.length === 0">
+      <p class="text-sm text-gray-500">Пока не было ни одной операции. Нажми <strong>«📥 Обработать»</strong> или <strong>«🔍 Проверить»</strong> на карточке проекта — здесь появится запись.</p>
+    </template>
+
+    <div class="space-y-2">
+      <template x-for="j in filteredJobs" :key="j.id">
+        <div class="bg-white rounded-lg border border-gray-200 shadow-sm">
+          <div class="p-3 flex items-center gap-3 cursor-pointer hover:bg-gray-50" @click="toggleJob(j.id)">
+            <span class="badge"
+              :class="j.status === 'running' ? 'badge-blue' : (j.status === 'done' ? 'badge-green' : 'badge-red')"
+              x-text="statusLabel(j.status)"
+              :title="'Техническое: ' + j.status"></span>
+            <span class="font-mono text-xs" x-text="typeLabel(j.type)" :title="'Техническое: ' + j.type"></span>
+            <span class="badge badge-gray text-xs" x-text="triggerLabel(j.trigger || 'manual')"
+                  :title="'Техническое: trigger=' + (j.trigger || 'manual')"></span>
+            <span class="font-medium text-sm" x-text="j.project"></span>
+            <span class="text-xs text-gray-500 ml-auto" x-text="j.finished_at || j.started_at"></span>
+            <span class="text-xs text-gray-400" x-text="expanded[j.id] ? '▲' : '▼'"></span>
+          </div>
+          <div x-show="expanded[j.id]" class="border-t border-gray-200 p-3 bg-gray-50 text-xs font-mono">
+            <p class="text-gray-500 mb-1" title="Уникальный идентификатор операции (для отладки)">job_id: <span x-text="j.id"></span></p>
+            <p class="text-gray-500 mb-1" x-show="j.source" title="Файл-источник, который обрабатывали">source (источник): <span x-text="j.source"></span></p>
+            <p class="text-gray-500 mb-1" x-show="j.exit_code !== null && j.exit_code !== undefined" title="Код завершения процесса: 0 = успех, не 0 = ошибка">exit (код выхода): <span x-text="j.exit_code"></span></p>
+            <p class="text-gray-500 mb-1" x-show="j.options && Object.keys(j.options).length">параметры: <span x-text="JSON.stringify(j.options)"></span></p>
+            <details x-show="j.stdout_tail" class="mt-2">
+              <summary class="cursor-pointer text-gray-700" title="Стандартный вывод процесса — обычные сообщения">стандартный вывод (stdout)</summary>
+              <pre class="mt-2 bg-white border border-gray-200 rounded p-2 text-xs" x-text="j.stdout_tail"></pre>
+            </details>
+            <details x-show="j.stderr_tail" class="mt-2">
+              <summary class="cursor-pointer text-red-700" title="Поток ошибок процесса">сообщения об ошибках (stderr)</summary>
+              <pre class="mt-2 bg-white border border-red-200 rounded p-2 text-xs text-red-700" x-text="j.stderr_tail"></pre>
+            </details>
+          </div>
+        </div>
+      </template>
+    </div>
+  </section>
+
+  <!-- ДИАГНОСТИКА -->
+  <section>
+    <div class="flex items-center justify-between mb-3">
+      <h2 class="text-xl font-semibold" title="Технический лог хуков — что и когда ловила система. Пригодится если что-то не работает.">
+        🩺 Диагностика
+        <span class="text-sm text-gray-500 font-normal" x-show="hookLogTotal">(записей в логе: <span x-text="hookLogTotal"></span>)</span>
+      </h2>
+      <div class="flex items-center gap-2">
+        <button @click="showHookLog = !showHookLog; if (showHookLog && hookLogLines.length === 0) loadHookLog();"
+                class="btn btn-secondary text-sm"
+                x-text="showHookLog ? '▲ Скрыть лог хуков' : '▼ Показать лог хуков'"></button>
+      </div>
+    </div>
+    <div x-show="showHookLog" x-cloak class="bg-gray-900 text-gray-100 rounded-lg p-3 border border-gray-800">
+      <div class="flex items-center justify-between mb-2 text-xs text-gray-400">
+        <span>Последние <span x-text="hookLogLines.length"></span> записей из <code>.shared/state/hook-log.txt</code></span>
+        <button @click="loadHookLog()" class="text-blue-300 hover:text-blue-200" :disabled="hookLogLoading">
+          <span x-show="!hookLogLoading">🔄 перечитать</span>
+          <span x-show="hookLogLoading" x-cloak>⏳ …</span>
+        </button>
+      </div>
+      <pre class="text-xs overflow-auto max-h-96" x-text="hookLogLines.join('\n') || '(пусто)'"></pre>
+    </div>
+  </section>
+
+  <!-- DIALOG: выбор проекта для сохранения непривязанной сессии -->
+  <div x-show="dumpDialog.show" x-cloak class="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+    <div class="bg-white rounded-lg max-w-lg w-full p-5 shadow-xl">
+      <h3 class="text-lg font-semibold mb-2">🛟 Сохранить непривязанную сессию</h3>
+      <p class="text-sm text-gray-500 mb-3">
+        Сессия <code class="font-mono" x-text="dumpDialog.sidShort"></code>
+        (<span class="font-mono" x-text="dumpDialog.cwd"></span>) не привязана ни к одному проекту.
+        Выбери, куда сохранить транскрипт.
+      </p>
+      <label class="block text-sm font-medium mb-1">Проект</label>
+      <select x-model="dumpDialog.target"
+              class="w-full border rounded px-3 py-2 text-sm mb-3">
+        <option value="">— Сохранить как непривязанную (в .unassigned/) —</option>
+        <template x-for="p in projects" :key="p.name">
+          <option :value="p.name" x-text="'🗂 ' + p.name"></option>
+        </template>
+      </select>
+      <p class="text-xs text-gray-500 mb-4">
+        <template x-if="dumpDialog.target">
+          <span>Файл попадёт в <code class="font-mono" x-text="dumpDialog.target + '/raw/chats/'"></code>.
+          Если у проекта включена авто-обработка — он сразу станет страницами базы знаний.</span>
+        </template>
+        <template x-if="!dumpDialog.target">
+          <span>Файл попадёт в <code class="font-mono">.unassigned/.../raw/chats/</code>.
+          Потом его можно вручную привязать к проекту в разделе «📤 Непривязанные сессии».</span>
+        </template>
+      </p>
+      <div class="flex items-center justify-end gap-2">
+        <button @click="dumpDialog.show = false" class="btn btn-secondary">Отмена</button>
+        <button @click="confirmDump()" class="btn btn-primary">💾 Сохранить</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- DIALOG: Ingest -->
+  <div x-show="showIngestDialog" x-cloak class="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+    <div class="bg-white rounded-lg max-w-lg w-full p-5 shadow-xl">
+      <h3 class="text-lg font-semibold mb-2">Запустить Ingest</h3>
+      <p class="text-sm text-gray-500 mb-3">
+        Проект: <span class="font-mono" x-text="ingestDialog.project"></span>
+      </p>
+      <label class="block text-sm font-medium mb-1">Файл-источник (абсолютный путь)</label>
+      <input type="text" x-model="ingestDialog.source"
+             class="w-full border rounded px-3 py-2 text-sm font-mono mb-2"
+             placeholder="C:/path/to/vault/raw/articles/article.md">
+      <p class="text-xs text-gray-500 mb-4">
+        Подсказка: скопируй путь из Obsidian (правый клик по файлу → Copy path).
+      </p>
+      <div class="flex items-center justify-end gap-2">
+        <button @click="showIngestDialog=false" class="btn btn-secondary">Отмена</button>
+        <button @click="runIngest()" class="btn btn-primary" :disabled="!ingestDialog.source">Запустить</button>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+function dashboard() {
+  return {
+    loading: true,
+    projects: [],
+    unassigned: [],
+    jobs: [],
+    schedules: [],
+    assignTargets: {},
+    expanded: {},
+    editingSchedule: {},
+    scheduleDraft: {},
+    cronDraft: {},
+    showIngestDialog: false,
+    ingestDialog: { project: '', source: '' },
+    previews: {},
+    jobFilter: { project: '', type: '', trigger: '', status: '' },
+    refreshing: false,
+    lastRefreshAt: '',
+    systemStatus: null,
+    showHealthDetails: false,
+    todayStats: null,
+    activeSessions: [],
+    dumpDialog: { show: false, sid: '', sidShort: '', cwd: '', target: '' },
+    showHookLog: false,
+    hookLogLines: [],
+    hookLogTotal: 0,
+    hookLogLoading: false,
+    _timer: null,
+
+    get activeSessionsByProject() {
+      // Группируем activeSessions по project (или отдельная группа Unassigned),
+      // сортируем группы: проекты по алфавиту, затем Непривязанные.
+      const buckets = {};
+      for (const s of this.activeSessions) {
+        const key = s.is_unassigned ? '__unassigned__' : s.project || '__unknown__';
+        if (!buckets[key]) buckets[key] = [];
+        buckets[key].push(s);
+      }
+      const groups = Object.entries(buckets).map(([key, sessions]) => ({
+        key,
+        label: key === '__unassigned__' ? 'Непривязанные' : key,
+        isUnassigned: key === '__unassigned__',
+        sessions,
+      }));
+      groups.sort((a, b) => {
+        if (a.isUnassigned && !b.isUnassigned) return 1;
+        if (!a.isUnassigned && b.isUnassigned) return -1;
+        return a.label.localeCompare(b.label);
+      });
+      return groups;
+    },
+
+    get filteredJobs() {
+      return this.jobs.filter(j => {
+        if (this.jobFilter.project && j.project !== this.jobFilter.project) return false;
+        if (this.jobFilter.type && j.type !== this.jobFilter.type) return false;
+        if (this.jobFilter.trigger && (j.trigger || 'manual') !== this.jobFilter.trigger) return false;
+        if (this.jobFilter.status && j.status !== this.jobFilter.status) return false;
+        return true;
+      });
+    },
+
+    init() {
+      this.refresh();
+      this._timer = setInterval(() => this.refresh(), 3000);
+    },
+
+    async refresh() {
+      this.refreshing = true;
+      try {
+        const urls = [
+          '/api/projects', '/api/unassigned', '/api/jobs', '/api/schedules',
+          '/api/system-status', '/api/today-stats', '/api/active-sessions',
+        ];
+        const results = await Promise.allSettled(
+          urls.map(u => fetch(u).then(r => r.ok ? r.json() : Promise.reject(r.status)))
+        );
+        const [p, u, j, s, sys, today, active] = results.map(r => r.status === 'fulfilled' ? r.value : null);
+        // Частичные сбои: логируем, но не роняем весь refresh.
+        const failures = results.map((r, i) => r.status === 'rejected' ? urls[i] : null).filter(Boolean);
+        if (failures.length === urls.length) {
+          // ВСЕ fetch провалились — показываем пользователю, что сервер недоступен.
+          // Дросселируем toast чтобы не спамить каждые 3 сек (полсбой могут идти долго).
+          if (!this._lastFullFailToast || Date.now() - this._lastFullFailToast > 30000) {
+            toast('error', 'Сервер не отвечает. Проверь что dashboard запущен.', 8000);
+            this._lastFullFailToast = Date.now();
+          }
+        } else if (failures.length) {
+          console.warn('refresh partial failure:', failures);
+        }
+        if (p) this.projects = p.projects || [];
+        if (u) this.unassigned = u.items || [];
+        if (j) this.jobs = j.jobs || [];
+        if (s) this.schedules = s.schedules || [];
+        if (sys) this.systemStatus = sys;
+        if (today) this.todayStats = today;
+        if (active) this.activeSessions = active.items || [];
+        // Инициализация драфтов для неактивных инпутов
+        this.projects.forEach(pr => {
+          if (this.scheduleDraft[pr.name] === undefined) {
+            this.scheduleDraft[pr.name] = pr.lint_schedule || '';
+          }
+          if (this.cronDraft[pr.name] === undefined) {
+            this.cronDraft[pr.name] = this.parseCronToWizard(pr.lint_schedule || '');
+          }
+        });
+        const now = new Date();
+        this.lastRefreshAt = now.toLocaleTimeString('ru-RU', { hour12: false });
+      } catch (e) {
+        console.error('refresh failed', e);
+      } finally {
+        this.loading = false;
+        this.refreshing = false;
+      }
+    },
+
+    busy(projectName) {
+      const running = this.jobs.find(j => j.project === projectName && j.status === 'running');
+      return running ? running.type : null;
+    },
+
+    async saveContextLimit(project, value) {
+      const n = parseInt(value, 10) || null;
+      const body = JSON.stringify({ context_limit: n });
+      const r = await fetch(`/api/settings/${encodeURIComponent(project.name)}`, {
+        method: 'PATCH', headers: {'Content-Type': 'application/json'}, body,
+      });
+      if (!r.ok) {
+        const d = await r.json();
+        toast('error', 'Ошибка: ' + (d.error || r.status));
+      }
+      this.refresh();
+    },
+
+    async toggleAuto(project) {
+      const body = JSON.stringify({ auto_ingest: !project.auto_ingest });
+      const r = await fetch(`/api/settings/${encodeURIComponent(project.name)}`, {
+        method: 'PATCH', headers: {'Content-Type': 'application/json'}, body,
+      });
+      if (!r.ok) {
+        const d = await r.json();
+        toast('error', 'Ошибка: ' + (d.error || r.status));
+      }
+      this.refresh();
+    },
+
+    async saveSchedule(project) {
+      const val = (this.scheduleDraft[project.name] || '').trim();
+      const body = JSON.stringify({ lint_schedule: val || null });
+      const r = await fetch(`/api/settings/${encodeURIComponent(project.name)}`, {
+        method: 'PATCH', headers: {'Content-Type': 'application/json'}, body,
+      });
+      if (!r.ok) {
+        const d = await r.json();
+        toast('error', 'Ошибка: ' + (d.error || r.status));
+        return;
+      }
+      this.editingSchedule[project.name] = false;
+      this.refresh();
+    },
+
+    async clearSchedule(project) {
+      this.scheduleDraft[project.name] = '';
+      this.cronDraft[project.name] = { mode: 'daily', time: '22:00', weekday: '1', everyHours: 4 };
+      await this.saveSchedule(project);
+    },
+
+    // Cron-wizard helpers
+    parseCronToWizard(cron) {
+      const defaults = { mode: 'daily', time: '22:00', weekday: '1', everyHours: 4 };
+      if (!cron) return defaults;
+      const parts = cron.trim().split(/\s+/);
+      if (parts.length !== 5) return { ...defaults, mode: 'custom' };
+      const [m, h, dom, mon, dow] = parts;
+      const pad = n => String(n).padStart(2, '0');
+      // Каждые N часов: "0 */N * * *"
+      const hourly = h.match(/^\*\/(\d+)$/);
+      if (m === '0' && hourly && dom === '*' && mon === '*' && dow === '*') {
+        return { ...defaults, mode: 'hourly', everyHours: parseInt(hourly[1], 10) };
+      }
+      // Раз в неделю: "M H * * DOW"
+      if (/^\d+$/.test(m) && /^\d+$/.test(h) && dom === '*' && mon === '*' && /^\d+$/.test(dow)) {
+        return { ...defaults, mode: 'weekly', time: pad(h) + ':' + pad(m), weekday: dow };
+      }
+      // Каждый день: "M H * * *"
+      if (/^\d+$/.test(m) && /^\d+$/.test(h) && dom === '*' && mon === '*' && dow === '*') {
+        return { ...defaults, mode: 'daily', time: pad(h) + ':' + pad(m) };
+      }
+      return { ...defaults, mode: 'custom' };
+    },
+
+    cronFromWizard(name) {
+      const w = this.cronDraft[name];
+      if (!w || w.mode === 'custom') return;
+      const [hh, mm] = (w.time || '22:00').split(':').map(x => parseInt(x, 10));
+      if (w.mode === 'daily') {
+        this.scheduleDraft[name] = `${mm} ${hh} * * *`;
+      } else if (w.mode === 'weekly') {
+        this.scheduleDraft[name] = `${mm} ${hh} * * ${w.weekday}`;
+      } else if (w.mode === 'hourly') {
+        const n = Math.max(1, Math.min(23, parseInt(w.everyHours, 10) || 4));
+        this.scheduleDraft[name] = `0 */${n} * * *`;
+      }
+    },
+
+    promptIngest(projectName) {
+      this.ingestDialog = { project: projectName, source: '' };
+      this.showIngestDialog = true;
+    },
+
+    async runIngest() {
+      if (!this.ingestDialog.source) return;
+      const body = JSON.stringify({ project: this.ingestDialog.project, source: this.ingestDialog.source });
+      const r = await fetch('/api/ingest', { method: 'POST', headers: {'Content-Type': 'application/json'}, body });
+      const data = await r.json();
+      if (!r.ok) toast('error', 'Ошибка: ' + (data.error || r.status));
+      this.showIngestDialog = false;
+      this.refresh();
+    },
+
+    async runLint(projectName, semantic) {
+      const body = JSON.stringify({ project: projectName, semantic: !!semantic, save: true });
+      const r = await fetch('/api/lint', { method: 'POST', headers: {'Content-Type': 'application/json'}, body });
+      const data = await r.json();
+      if (!r.ok) toast('error', 'Ошибка: ' + (data.error || r.status));
+      this.refresh();
+    },
+
+    async assignChat(chatPath) {
+      const project = this.assignTargets[chatPath];
+      if (!project) return;
+      const body = JSON.stringify({ chat_path: chatPath, project });
+      const r = await fetch('/api/assign', { method: 'POST', headers: {'Content-Type': 'application/json'}, body });
+      const data = await r.json();
+      if (!r.ok) { toast('error', 'Ошибка: ' + (data.error || r.status)); return; }
+      delete this.assignTargets[chatPath];
+      this.refresh();
+    },
+
+    async deleteChat(chatPath) {
+      if (!(await confirmDialog('Удалить чат ' + chatPath + '?'))) return;
+      const body = JSON.stringify({ chat_path: chatPath });
+      const r = await fetch('/api/chat', { method: 'DELETE', headers: {'Content-Type': 'application/json'}, body });
+      if (!r.ok) { const d = await r.json(); toast('error', 'Ошибка: ' + (d.error || r.status)); return; }
+      this.refresh();
+    },
+
+    toggleJob(id) { this.expanded[id] = !this.expanded[id]; },
+
+    formatAge(sec) {
+      if (!sec || sec < 0) return '—';
+      if (sec < 60) return sec + ' сек';
+      if (sec < 3600) return Math.floor(sec / 60) + ' мин';
+      if (sec < 86400) return Math.floor(sec / 3600) + ' ч';
+      return Math.floor(sec / 86400) + ' дн';
+    },
+
+    async startDump(s) {
+      // Привязанная сессия → сохраняем сразу в её проект
+      if (s.project) {
+        if (!(await confirmDialog(`Сохранить транскрипт в ${s.project}/raw/chats/?`))) return;
+        this._doDump(s.sid, null);
+        return;
+      }
+      // Непривязанная → открыть модалку с выбором проекта
+      this.dumpDialog = {
+        show: true,
+        sid: s.sid,
+        sidShort: s.sid_short || s.sid.slice(0, 8),
+        cwd: s.cwd_raw,
+        target: '',
+      };
+    },
+
+    async confirmDump() {
+      const sid = this.dumpDialog.sid;
+      const target = this.dumpDialog.target || null;
+      this.dumpDialog.show = false;
+      await this._doDump(sid, target);
+    },
+
+    async _doDump(sid, targetProject) {
+      try {
+        const body = { sid };
+        if (targetProject) body.target_project = targetProject;
+        const r = await fetch('/api/active-sessions/force-dump', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(body),
+        });
+        const d = await r.json();
+        if (!r.ok) { toast('error', 'Ошибка: ' + (d.error || r.status)); return; }
+        if (!d.dumped) toast('warn', 'Транскрипт не сохранён (вероятно, уже сохранён в последние 5 мин — сработал дедуп). Запись убрана из реестра.');
+      } catch (e) { console.error(e); }
+      this.refresh();
+    },
+
+    async loadHookLog() {
+      this.hookLogLoading = true;
+      try {
+        const r = await fetch('/api/hook-log?lines=80');
+        const d = await r.json();
+        this.hookLogLines = d.lines || [];
+        this.hookLogTotal = d.total || 0;
+      } catch (e) {
+        console.error(e);
+      } finally {
+        this.hookLogLoading = false;
+      }
+    },
+
+    async togglePreview(path) {
+      if (this.previews[path]) {
+        delete this.previews[path];
+        return;
+      }
+      try {
+        const r = await fetch('/api/chat/preview?path=' + encodeURIComponent(path));
+        const d = await r.json();
+        if (!r.ok) { toast('error', 'Ошибка: ' + (d.error || r.status)); return; }
+        this.previews[path] = d.preview + (d.truncated ? `\n\n… [обрезано, всего ${d.total_chars} символов]` : '');
+      } catch (e) {
+        console.error(e);
+      }
+    },
+
+    formatSize(b) {
+      if (b < 1024) return b + ' B';
+      if (b < 1024*1024) return (b/1024).toFixed(1) + ' KB';
+      return (b/1024/1024).toFixed(1) + ' MB';
+    },
+
+    formatBytes(n) {
+      if (n >= 1000) return (n/1000).toFixed(1) + 'k';
+      return String(n);
+    },
+
+    contextBadgeClass(ctx) {
+      if (!ctx) return 'badge-gray';
+      if (ctx.status === 'over') return 'badge-red';
+      if (ctx.status === 'warn') return 'badge-yellow';
+      return 'badge-green';
+    },
+
+    contextTitle(ctx) {
+      if (!ctx) return '';
+      if (ctx.truncated) return `⚠ Контекст превышает лимит ${ctx.limit}: часть обрезается. Сократи index.md или log.md`;
+      if (ctx.status === 'warn') return `Приближается к лимиту ${ctx.limit}. Пока ок, но присмотри.`;
+      return `Вставка при старте сессии: ${ctx.raw_size} / ${ctx.limit} символов. Норма.`;
+    },
+
+    // Локализация технических ярлыков в понятные надписи
+    statusLabel(s) {
+      return ({
+        running: '⏳ идёт',
+        done: '✅ готово',
+        failed: '❌ ошибка',
+      })[s] || s;
+    },
+    typeLabel(t) {
+      return ({
+        ingest: '📥 обработка',
+        lint: '🔍 проверка',
+      })[t] || t;
+    },
+    triggerLabel(t) {
+      return ({
+        manual: '🧑 вручную',
+        auto: '🤖 автоматически',
+        schedule: '⏰ по расписанию',
+      })[t] || t;
+    },
+  };
+}
+</script>
+{% endblock %}

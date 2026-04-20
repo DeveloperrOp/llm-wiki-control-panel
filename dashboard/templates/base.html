@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}LLM Wiki Control Panel{% endblock %}</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js"></script>
+  {% block head_extra %}{% endblock %}
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif; }
+    pre { white-space: pre-wrap; word-wrap: break-word; }
+    .btn { display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.4rem 0.8rem; border-radius: 0.375rem; font-weight: 500; transition: all 0.15s; }
+    .btn:hover:not(:disabled) { transform: translateY(-1px); }
+    .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+    .btn:disabled:hover { transform: none; }
+    .btn-primary  { background: #2563eb; color: white; }
+    .btn-primary:hover:not(:disabled) { background: #1d4ed8; }
+    .btn-secondary { background: #f3f4f6; color: #111827; }
+    .btn-secondary:hover:not(:disabled) { background: #e5e7eb; }
+    .btn-danger { background: #dc2626; color: white; }
+    .btn-danger:hover:not(:disabled) { background: #b91c1c; }
+    .badge { display: inline-flex; align-items: center; padding: 0.15rem 0.5rem; border-radius: 999px; font-size: 0.75rem; font-weight: 500; }
+    .badge-green { background: #d1fae5; color: #065f46; }
+    .badge-blue  { background: #dbeafe; color: #1e3a8a; }
+    .badge-gray  { background: #f3f4f6; color: #374151; }
+    .badge-red   { background: #fee2e2; color: #991b1b; }
+    .badge-yellow { background: #fef3c7; color: #92400e; }
+    .badge-purple { background: #ede9fe; color: #5b21b6; }
+    .badge-pink { background: #fce7f3; color: #9d174d; }
+
+    /* Toast notifications */
+    #toast-container { position: fixed; bottom: 1rem; right: 1rem; z-index: 9999; display: flex; flex-direction: column; gap: 0.5rem; pointer-events: none; max-width: 420px; }
+    .toast { pointer-events: auto; padding: 0.75rem 1rem; border-radius: 0.5rem; font-size: 0.875rem; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1), 0 4px 6px -4px rgba(0,0,0,0.1); display: flex; align-items: start; gap: 0.5rem; animation: toast-in 0.2s ease-out; background: white; border: 1px solid; }
+    .toast.leaving { animation: toast-out 0.3s ease-in forwards; }
+    .toast-ok     { border-color: #86efac; background: #f0fdf4; color: #14532d; }
+    .toast-info   { border-color: #93c5fd; background: #eff6ff; color: #1e3a8a; }
+    .toast-warn   { border-color: #fcd34d; background: #fffbeb; color: #78350f; }
+    .toast-error  { border-color: #fca5a5; background: #fef2f2; color: #7f1d1d; }
+    .toast-icon { flex-shrink: 0; font-size: 1rem; line-height: 1.25rem; }
+    .toast-body { flex: 1; min-width: 0; word-wrap: break-word; }
+    .toast-close { flex-shrink: 0; opacity: 0.6; cursor: pointer; background: none; border: none; color: inherit; padding: 0 0.25rem; font-size: 1rem; line-height: 1; }
+    .toast-close:hover { opacity: 1; }
+    @keyframes toast-in  { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: translateX(0); } }
+    @keyframes toast-out { from { opacity: 1; transform: translateX(0); } to { opacity: 0; transform: translateX(20px); } }
+  </style>
+</head>
+<body class="bg-gray-50 text-gray-900">
+  <!-- Toast-контейнер + глобальный API window.toast(type, message, duration?) -->
+  <!-- aria-live=polite — screen reader зачитывает появляющиеся toast'ы. -->
+  <div id="toast-container" role="status" aria-live="polite" aria-atomic="false"></div>
+  <script>
+    window.toast = function(type, message, duration) {
+      const icons = { ok: '✅', info: 'ℹ️', warn: '⚠️', error: '❌' };
+      const icon = icons[type] || icons.info;
+      const ttl = duration || (type === 'error' ? 8000 : 4000);
+      const el = document.createElement('div');
+      el.className = 'toast toast-' + (type || 'info');
+      el.innerHTML = '<span class="toast-icon">' + icon + '</span>'
+                   + '<div class="toast-body"></div>'
+                   + '<button class="toast-close" title="Закрыть">✕</button>';
+      el.querySelector('.toast-body').textContent = message;
+      const dismiss = () => {
+        el.classList.add('leaving');
+        setTimeout(() => el.remove(), 300);
+      };
+      el.querySelector('.toast-close').onclick = dismiss;
+      document.getElementById('toast-container').appendChild(el);
+      if (ttl > 0) setTimeout(dismiss, ttl);
+      return el;
+    };
+
+    // Promise-based confirm dialog (замена нативному confirm()).
+    // Использование: if (await confirmDialog('Точно удалить?')) { ... }
+    // Поддерживает стек: если открыть второй диалог поверх первого,
+    // keydown-события идут только в самый верхний.
+    window.__confirmStack = window.__confirmStack || [];
+    window.confirmDialog = function(message, opts) {
+      opts = opts || {};
+      return new Promise((resolve) => {
+        const overlay = document.createElement('div');
+        overlay.className = 'fixed inset-0 bg-black/40 flex items-center justify-center z-[60] p-4';
+        const modal = document.createElement('div');
+        modal.className = 'bg-white rounded-lg shadow-xl max-w-md w-full p-5';
+        // ARIA: role=dialog + aria-modal для screen reader'ов.
+        modal.setAttribute('role', 'dialog');
+        modal.setAttribute('aria-modal', 'true');
+        modal.setAttribute('aria-labelledby', 'confirm-msg-' + Date.now());
+        const p = document.createElement('p');
+        p.className = 'text-sm mb-4 whitespace-pre-wrap';
+        p.id = modal.getAttribute('aria-labelledby');
+        p.textContent = message;
+        modal.appendChild(p);
+        const row = document.createElement('div');
+        row.className = 'flex gap-2 justify-end';
+        const cancel = document.createElement('button');
+        cancel.className = 'btn btn-secondary text-sm';
+        cancel.textContent = opts.cancelLabel || 'Отмена';
+        const ok = document.createElement('button');
+        ok.className = 'btn ' + (opts.danger === false ? 'btn-primary' : 'btn-danger') + ' text-sm';
+        ok.textContent = opts.okLabel || 'OK';
+        row.appendChild(cancel); row.appendChild(ok);
+        modal.appendChild(row);
+        overlay.appendChild(modal);
+        // Сохраняем откуда был фокус до модалки — вернём после закрытия
+        const previousActive = document.activeElement;
+        const dialog = { overlay, resolve: null, onKey: null };
+        const close = (val) => {
+          const idx = window.__confirmStack.indexOf(dialog);
+          if (idx >= 0) window.__confirmStack.splice(idx, 1);
+          document.removeEventListener('keydown', dialog.onKey, true);
+          overlay.remove();
+          // Возвращаем фокус на исходный элемент (важно для screen-reader юзеров)
+          if (previousActive && typeof previousActive.focus === 'function') {
+            try { previousActive.focus(); } catch (_) { /* element detached */ }
+          }
+          resolve(val);
+        };
+        dialog.onKey = (e) => {
+          // Только верхний диалог реагирует на клавиатуру
+          if (window.__confirmStack[window.__confirmStack.length - 1] !== dialog) return;
+          if (e.key === 'Escape') { e.stopPropagation(); close(false); return; }
+          if (e.key === 'Enter')  { e.stopPropagation(); close(true); return; }
+          if (e.key === 'Tab') {
+            // Focus trap: Tab между Отмена/OK циклично.
+            e.stopPropagation(); e.preventDefault();
+            const focusable = [cancel, ok];
+            const cur = focusable.indexOf(document.activeElement);
+            const next = e.shiftKey ? (cur - 1 + focusable.length) % focusable.length
+                                    : (cur + 1) % focusable.length;
+            focusable[next].focus();
+          }
+        };
+        cancel.onclick = () => close(false);
+        ok.onclick     = () => close(true);
+        overlay.onclick = (e) => { if (e.target === overlay) close(false); };
+        // capture: true — перехватываем раньше других хендлеров, plus stack-check.
+        document.addEventListener('keydown', dialog.onKey, true);
+        document.body.appendChild(overlay);
+        window.__confirmStack.push(dialog);
+        ok.focus();
+      });
+    };
+  </script>
+  <header class="bg-white border-b border-gray-200 shadow-sm">
+    <div class="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <a href="/" class="flex items-center gap-3">
+          <span class="text-2xl">📚</span>
+          <div>
+            <h1 class="text-lg font-semibold hover:text-blue-600 transition">LLM Wiki Control Panel</h1>
+            <p class="text-xs text-gray-500">localhost:5757</p>
+          </div>
+        </a>
+        {% block breadcrumbs %}{% endblock %}
+      </div>
+      <nav class="flex items-center gap-3 text-sm">
+        <a href="/" class="text-gray-600 hover:text-gray-900">Главная</a>
+        <span class="text-gray-300">|</span>
+        <a href="/help" class="text-gray-600 hover:text-gray-900">❔ Помощь</a>
+        <span class="text-gray-300">|</span>
+        <a href="/settings" class="text-gray-600 hover:text-gray-900">⚙ Настройки</a>
+        <span class="text-gray-300">|</span>
+        <a href="/api/health" target="_blank" class="text-gray-600 hover:text-gray-900">API health</a>
+      </nav>
+    </div>
+  </header>
+  <main class="max-w-7xl mx-auto px-4 py-6">
+    {% block content %}{% endblock %}
+  </main>
+  <footer class="text-center text-xs text-gray-400 py-6">
+    LLM Wiki Control Panel · 2026
+  </footer>
+</body>
+</html>

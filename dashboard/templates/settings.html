@@ -1,0 +1,518 @@
+{% extends "base.html" %}
+
+{% block title %}Настройки · Control Panel{% endblock %}
+
+{% block breadcrumbs %}
+<span class="text-gray-300 ml-2">/</span>
+<span class="text-sm text-gray-700 font-medium">⚙ Настройки</span>
+{% endblock %}
+
+{% block content %}
+<div x-data="settingsPage()" x-init="init()" class="space-y-8">
+
+  <!-- ПРОЕКТЫ -->
+  <section id="new-project">
+    <div class="flex items-center justify-between mb-4">
+      <h2 class="text-xl font-semibold">🗂 Проекты и маппинг</h2>
+      <button @click="showNewProjectDialog = true" class="btn btn-primary">+ Новый проект</button>
+    </div>
+
+    <template x-if="projects.length === 0">
+      <p class="text-sm text-gray-500">Ещё нет проектов. Нажми «+ Новый проект» справа сверху — откроется форма создания.</p>
+    </template>
+
+    <div class="space-y-3">
+      <template x-for="p in projects" :key="p.name">
+        <div class="bg-white rounded-lg border border-gray-200 p-4 shadow-sm">
+          <div class="flex items-start justify-between gap-4 mb-3">
+            <div class="flex-1 min-w-0">
+              <h3 class="font-semibold flex items-center gap-2">
+                <span class="text-lg">🗂</span>
+                <span x-text="p.name"></span>
+              </h3>
+              <p class="text-xs font-mono text-gray-500 mt-1" :title="'Папка базы знаний проекта'" x-text="p.vault_root"></p>
+            </div>
+            <button @click="deleteProject(p.name)" class="btn btn-danger text-xs"
+                    title="Убрать запись о проекте. Папка на диске НЕ удаляется — только перестаёт отображаться в дашборде.">✕ Удалить из списка</button>
+          </div>
+
+          <!-- cwd_patterns -->
+          <div class="mb-2">
+            <label class="block text-xs text-gray-600 font-medium mb-1"
+                   title="Когда ты запускаешь Claude Code в папке, путь которой совпадает с одним из этих шаблонов — сессия будет привязана к этому проекту. Синтаксис fnmatch (как wildcard в cmd): * = любые символы, ? = один символ.">
+              📁 Папки проекта <span class="text-gray-400 font-normal">(cwd_patterns — шаблоны путей)</span>
+            </label>
+            <template x-for="(pat, idx) in patternsDraft[p.name] || []" :key="idx">
+              <div class="flex items-center gap-2 mb-1">
+                <input type="text" x-model="patternsDraft[p.name][idx]"
+                       class="flex-1 border rounded px-2 py-1 text-xs font-mono"
+                       placeholder="*/имя-проекта*">
+                <button @click="pickFolderForPattern(p.name, idx)" class="btn btn-secondary text-xs"
+                        title="Выбрать папку в проводнике (путь станет fnmatch-шаблоном)">📁</button>
+                <button @click="removePattern(p.name, idx)" class="btn btn-danger text-xs" title="Удалить этот шаблон">✕</button>
+              </div>
+            </template>
+            <div class="flex items-center gap-2 mt-1">
+              <button @click="addPattern(p.name)" class="btn btn-secondary text-xs">+ Добавить шаблон</button>
+              <button @click="savePatterns(p.name)" class="btn btn-primary text-xs">💾 Сохранить</button>
+            </div>
+            <p class="text-xs text-gray-500 mt-2">
+              Примеры: <code>*/мой-проект</code> (папка именно с таким именем), <code>*/мой-проект/*</code> (подпапки), <code>*мой-проект*</code> (любое место в пути).
+            </p>
+          </div>
+
+          <!-- Autoimport & Schedule -->
+          <div class="flex items-center gap-3 text-xs text-gray-600 mt-3 pt-3 border-t border-gray-100">
+            <span title="auto_ingest: если включено — новые диалоги Claude Code сами превращаются в страницы базы знаний">🤖 Авто-обработка новых диалогов: <span class="font-semibold" x-text="p.auto_ingest ? 'включена' : 'выключена'"></span></span>
+            <span>·</span>
+            <span title="lint_schedule: cron-расписание для автоматической проверки базы знаний">⏰ Авто-проверка по расписанию: <span class="font-mono" x-text="p.lint_schedule || '— не задано —'"></span></span>
+            <span class="ml-auto">
+              <a :href="'/project/' + encodeURIComponent(p.name)" class="text-blue-600 hover:underline">→ Открыть страницу</a>
+            </span>
+          </div>
+        </div>
+      </template>
+    </div>
+  </section>
+
+  <!-- ПРОМПТЫ -->
+  <section>
+    <h2 class="text-xl font-semibold mb-4" title="Промпты — это инструкции, которые передаются Claude при обработке (ingest) и проверке (lint). Меняй только если знаешь что делаешь.">📝 Редактор промптов Claude</h2>
+    <p class="text-sm text-gray-500 mb-3">
+      Здесь можно править инструкции, которые получает Claude при <strong>📥 Обработке</strong> и <strong>🧠 Глубокой проверке</strong>. Файлы лежат в <code class="text-xs" title="Папка с промптами">.shared/prompts/*.md</code>. Перед каждой записью автоматически создаётся резервная копия <code class="text-xs">*.md.bak</code> — если сломал, восстанови из неё.
+    </p>
+
+    <div class="space-y-3">
+      <template x-for="pr in prompts" :key="pr.name">
+        <div class="bg-white rounded-lg border border-gray-200 shadow-sm">
+          <div class="p-3 flex items-center gap-3 cursor-pointer hover:bg-gray-50" @click="togglePrompt(pr.name)">
+            <span class="font-mono text-sm" x-text="pr.filename"></span>
+            <span class="text-xs text-gray-500" x-text="pr.mtime"></span>
+            <span class="badge badge-gray text-xs" x-text="formatSize(pr.size)"></span>
+            <span class="text-xs text-gray-400 ml-auto" x-text="openPrompts[pr.name] ? '▲ закрыть' : '▼ редактировать'"></span>
+          </div>
+          <div x-show="openPrompts[pr.name]" x-cloak class="border-t border-gray-200 p-3 bg-gray-50">
+            <template x-if="promptLoading[pr.name]">
+              <p class="text-sm text-gray-500">Загрузка…</p>
+            </template>
+            <template x-if="!promptLoading[pr.name] && promptContent[pr.name] !== undefined">
+              <div>
+                <textarea x-model="promptContent[pr.name]"
+                          @input="promptDirty[pr.name] = (promptContent[pr.name] !== _originals[pr.name])"
+                          class="w-full border rounded px-3 py-2 text-xs font-mono h-96 bg-white"
+                          spellcheck="false"></textarea>
+                <div class="flex items-center gap-2 mt-2">
+                  <button @click="savePrompt(pr.name)" class="btn btn-primary text-sm" :disabled="promptSaving[pr.name]">
+                    <span x-show="!promptSaving[pr.name]">💾 Сохранить</span>
+                    <span x-show="promptSaving[pr.name]">⏳ …</span>
+                  </button>
+                  <button @click="reloadPrompt(pr.name)" class="btn btn-secondary text-sm">↻ Сбросить</button>
+                  <span class="text-xs text-gray-500 ml-auto" x-show="promptDirty[pr.name]">несохранённые изменения</span>
+                </div>
+              </div>
+            </template>
+          </div>
+        </div>
+      </template>
+    </div>
+  </section>
+
+  <!-- DIALOG: Новый проект -->
+  <div x-show="showNewProjectDialog" x-cloak class="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+    <div class="bg-white rounded-lg max-w-xl w-full p-5 shadow-xl">
+      <h3 class="text-lg font-semibold mb-3">Новый проект</h3>
+      <div class="space-y-3">
+        <div>
+          <label class="block text-sm font-medium mb-1">Имя проекта</label>
+          <input type="text" x-model="newProject.name"
+                 class="w-full border rounded px-3 py-2 text-sm" placeholder="Мой проект">
+          <p class="text-xs text-gray-500 mt-1">Как называть в дашборде. Можно любой текст.</p>
+        </div>
+        <div class="border-2 border-red-400 bg-red-50 rounded-lg p-3">
+          <label class="block text-sm font-bold mb-1 text-red-800 flex items-center gap-2" title="Абсолютный путь к папке, где будет храниться база знаний проекта: raw/ (источники) и wiki/ (страницы).">
+            <span class="text-lg">⚠️</span>
+            📁 Папка базы знаний <span class="text-red-600 font-normal">— здесь будут лежать «мозги»!</span>
+          </label>
+          <p class="text-xs text-red-700 mb-2 font-medium">
+            Это НЕ папка с кодом проекта! Это отдельная папка, где система будет хранить <code>raw/chats/</code>, <code>wiki/</code>, <code>.backups/</code>, <code>index.md</code>, <code>log.md</code>.
+          </p>
+          <p class="text-xs text-red-700 mb-2">
+            <strong>Правильно:</strong> отдельная пустая папка, например <code>C:/path/to/OBSIDIAN/My Project</code>.<br>
+            <strong>Неправильно:</strong> папка с твоим рабочим кодом (туда прямо под файлы насыпется <code>raw/</code> и <code>wiki/</code>).
+          </p>
+          <div class="flex items-center gap-2">
+            <input type="text" x-model="newProject.vault_root"
+                   class="flex-1 border-2 border-red-300 focus:border-red-500 rounded px-3 py-2 text-sm font-mono bg-white"
+                   placeholder="C:/path/to/OBSIDIAN/My Project">
+            <button @click="pickFolderForVaultRoot()" class="btn btn-secondary text-sm"
+                    title="Выбрать папку в проводнике">📁 Выбрать</button>
+          </div>
+          <p class="text-xs text-gray-600 mt-1">Если поставишь галочку «Создать структуру папок» ниже — папки <code>raw/</code> и <code>wiki/</code> создадутся автоматически <strong>внутри этой папки</strong>.</p>
+        </div>
+        <div>
+          <label class="block text-sm font-medium mb-1" title="Шаблоны путей: когда ты запустишь Claude Code в папке, подходящей под один из этих шаблонов, сессия будет привязана к этому проекту. Синтаксис fnmatch: * = любые символы.">
+            🎯 Какие папки относятся к проекту <span class="text-gray-400 font-normal">(cwd_patterns — по одному на строку)</span>
+          </label>
+          <textarea x-model="newProject.cwd_patterns_raw"
+                    class="w-full border rounded px-3 py-2 text-xs font-mono h-20"
+                    placeholder="*/мой-проект&#10;*/мой-проект/*"></textarea>
+          <div class="flex items-center justify-between mt-1">
+            <p class="text-xs text-gray-500">
+              Примеры: <code>*/мой-проект</code> (точное совпадение), <code>*/мой-проект/*</code> (и все подпапки).
+              Можно оставить пустым — тогда сессии будут попадать в «📤 Непривязанные».
+            </p>
+            <button @click="pickFolderForNewPattern()" class="btn btn-secondary text-xs shrink-0 ml-2"
+                    title="Выбрать папку в проводнике — путь добавится как новый шаблон">📁 Добавить папку</button>
+          </div>
+        </div>
+        <div class="flex items-center gap-4">
+          <label class="flex items-center gap-2 text-sm" title="Включено — новые закрытые сессии автоматически превращаются в страницы базы знаний. Выключено — обработка только вручную по кнопке «📥 Обработать».">
+            <input type="checkbox" x-model="newProject.auto_ingest"> 🤖 Авто-обработка новых диалогов
+          </label>
+          <label class="flex items-center gap-2 text-sm" title="Создать внутри папки структуру raw/{chats,articles,docs,assets} и wiki/{entities,concepts,sources}">
+            <input type="checkbox" x-model="newProject.init_structure" checked> 📂 Создать структуру папок
+          </label>
+        </div>
+      </div>
+      <div class="flex items-center justify-end gap-2 mt-4">
+        <!-- Подсказка что не заполнено -->
+        <template x-if="!newProject.name || !newProject.vault_root">
+          <p class="text-xs text-red-600 mr-auto flex items-center gap-1">
+            <span>⚠</span>
+            <span x-show="!newProject.name && !newProject.vault_root">Нужно заполнить «Имя проекта» и «Папка базы знаний»</span>
+            <span x-show="!newProject.name && newProject.vault_root">Нужно заполнить «Имя проекта»</span>
+            <span x-show="newProject.name && !newProject.vault_root">Нужно заполнить «Папка базы знаний»</span>
+          </p>
+        </template>
+        <button @click="showNewProjectDialog=false" class="btn btn-secondary">Отмена</button>
+        <button @click="createProject()" class="btn btn-primary"
+                :disabled="!newProject.name || !newProject.vault_root"
+                :title="(!newProject.name || !newProject.vault_root) ? 'Заполни поля Имя проекта и Папка базы знаний' : 'Создать проект'">Создать</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- DIALOG: выбор варианта шаблона после выбора папки -->
+  <div x-show="pickScope.show" x-cloak class="fixed inset-0 bg-black/40 flex items-center justify-center z-[60] p-4">
+    <div class="bg-white rounded-lg max-w-lg w-full p-5 shadow-xl">
+      <h3 class="text-lg font-semibold mb-2">🎯 Как ловить сессии из этой папки?</h3>
+      <p class="text-sm text-gray-600 mb-3">
+        Папка: <code class="font-mono break-all" x-text="pickScope.path"></code>
+      </p>
+      <p class="text-xs text-gray-500 mb-2">Можно выбрать несколько вариантов — все их шаблоны добавятся в список (дубликаты убираются автоматически).</p>
+      <div class="space-y-2">
+        <label class="flex items-start gap-2 p-3 border rounded cursor-pointer hover:bg-gray-50"
+               :class="pickScope.choices.exact ? 'border-blue-500 bg-blue-50' : 'border-gray-200'">
+          <input type="checkbox" x-model="pickScope.choices.exact" class="mt-0.5">
+          <div class="flex-1">
+            <div class="font-semibold text-sm">📁 Только эта папка</div>
+            <p class="text-xs text-gray-600 mt-0.5">
+              Сессии строго в <code x-text="pickScope.path"></code>. Подпапки идут в «Непривязанные».
+            </p>
+            <code class="text-xs text-blue-600 mt-1 inline-block" x-text="pickScope.path"></code>
+          </div>
+        </label>
+        <label class="flex items-start gap-2 p-3 border rounded cursor-pointer hover:bg-gray-50"
+               :class="pickScope.choices.with_subfolders ? 'border-blue-500 bg-blue-50' : 'border-gray-200'">
+          <input type="checkbox" x-model="pickScope.choices.with_subfolders" class="mt-0.5">
+          <div class="flex-1">
+            <div class="font-semibold text-sm">📂 Эта папка и все подпапки <span class="text-xs text-gray-500 font-normal">(рекомендуется)</span></div>
+            <p class="text-xs text-gray-600 mt-0.5">
+              Сессии в корне папки + в любой её подпапке. Добавит 2 шаблона.
+            </p>
+            <div class="text-xs text-blue-600 mt-1">
+              <div><code x-text="pickScope.path"></code></div>
+              <div><code x-text="pickScope.path + '/*'"></code></div>
+            </div>
+          </div>
+        </label>
+        <label class="flex items-start gap-2 p-3 border rounded cursor-pointer hover:bg-gray-50"
+               :class="pickScope.choices.anywhere ? 'border-blue-500 bg-blue-50' : 'border-gray-200'">
+          <input type="checkbox" x-model="pickScope.choices.anywhere" class="mt-0.5">
+          <div class="flex-1">
+            <div class="font-semibold text-sm">🔍 Где угодно в пути</div>
+            <p class="text-xs text-gray-600 mt-0.5">
+              Совпадение по имени папки независимо от родителя. Пригодится если папку переместят.
+            </p>
+            <code class="text-xs text-blue-600 mt-1 inline-block" x-text="'*' + pickScope.folderName + '*'"></code>
+          </div>
+        </label>
+      </div>
+
+      <!-- Итого что добавится -->
+      <div class="mt-3 p-2 bg-gray-50 rounded border border-gray-200 text-xs">
+        <div class="font-semibold text-gray-600 mb-1">Итого добавится шаблонов: <span x-text="pickedPatterns().length"></span></div>
+        <template x-if="pickedPatterns().length > 0">
+          <div class="space-y-0.5">
+            <template x-for="p in pickedPatterns()" :key="p">
+              <div><code class="text-blue-600" x-text="p"></code></div>
+            </template>
+          </div>
+        </template>
+        <template x-if="pickedPatterns().length === 0">
+          <div class="text-gray-500">Выбери хотя бы один вариант.</div>
+        </template>
+      </div>
+
+      <div class="flex items-center justify-end gap-2 mt-4">
+        <button @click="pickScope.show = false" class="btn btn-secondary">Отмена</button>
+        <button @click="applyPickScope()" class="btn btn-primary" :disabled="pickedPatterns().length === 0">✓ Добавить</button>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+function settingsPage() {
+  return {
+    projects: [],
+    prompts: [],
+    patternsDraft: {},
+    openPrompts: {},
+    promptContent: {},
+    promptLoading: {},
+    promptSaving: {},
+    promptDirty: {},
+    _originals: {},
+    showNewProjectDialog: false,
+    newProject: { name: '', vault_root: '', cwd_patterns_raw: '', auto_ingest: false, init_structure: true },
+    // Модалка «как ловить» после выбора папки через 📁
+    pickScope: {
+      show: false, path: '', folderName: '',
+      choices: { exact: false, with_subfolders: true, anywhere: false },
+      target: null,  // { type: 'pattern'|'new_pattern', projectName?, idx? }
+    },
+
+    init() {
+      this.refresh();
+    },
+
+    async refresh() {
+      try {
+        const urls = ['/api/projects', '/api/prompts'];
+        const results = await Promise.allSettled(
+          urls.map(u => fetch(u).then(r => r.ok ? r.json() : Promise.reject(r.status)))
+        );
+        const [pR, prR] = results;
+        if (pR.status === 'fulfilled') this.projects = pR.value.projects || [];
+        if (prR.status === 'fulfilled') this.prompts = prR.value.prompts || [];
+        const failures = results.map((r, i) => r.status === 'rejected' ? urls[i] : null).filter(Boolean);
+        if (failures.length === urls.length) {
+          toast('error', 'Сервер недоступен — обнови страницу позже.');
+        } else if (failures.length) {
+          console.warn('settings refresh partial failure:', failures);
+        }
+        // cwd_patterns не приходит в _project_stats — читаем отдельно через /api/raw-map
+        await this._loadPatterns();
+      } catch (e) { console.error(e); }
+    },
+
+    async _loadPatterns() {
+      try {
+        const r = await fetch('/api/raw-map');
+        if (r.ok) {
+          const d = await r.json();
+          const byName = {};
+          for (const e of (d.mappings || [])) {
+            byName[e.name] = e.cwd_patterns || [];
+          }
+          for (const p of this.projects) {
+            if (this.patternsDraft[p.name] === undefined) {
+              this.patternsDraft[p.name] = [...(byName[p.name] || [])];
+            }
+          }
+        }
+      } catch (e) { /* fallback ниже */ }
+    },
+
+    addPattern(name) {
+      if (!this.patternsDraft[name]) this.patternsDraft[name] = [];
+      this.patternsDraft[name].push('');
+    },
+
+    removePattern(name, idx) {
+      this.patternsDraft[name].splice(idx, 1);
+    },
+
+    async savePatterns(name) {
+      const patterns = (this.patternsDraft[name] || []).filter(p => p.trim());
+      const body = JSON.stringify({ cwd_patterns: patterns });
+      const r = await fetch(`/api/settings/${encodeURIComponent(name)}`, {
+        method: 'PATCH', headers: {'Content-Type': 'application/json'}, body,
+      });
+      if (!r.ok) { const d = await r.json(); toast('error', 'Ошибка: ' + (d.error || r.status)); return; }
+      toast('ok', 'Сохранено: ' + patterns.length + ' шаблон(ов)');
+      this.refresh();
+    },
+
+    async deleteProject(name) {
+      if (!(await confirmDialog(`Удалить проект «${name}» из project-map.json?\nПапка на диске не тронется.`))) return;
+      const r = await fetch('/api/projects/' + encodeURIComponent(name), { method: 'DELETE' });
+      if (!r.ok) { const d = await r.json(); toast('error', 'Ошибка: ' + (d.error || r.status)); return; }
+      delete this.patternsDraft[name];
+      this.refresh();
+    },
+
+    async createProject() {
+      const patterns = (this.newProject.cwd_patterns_raw || '').split('\n').map(s => s.trim()).filter(Boolean);
+      const body = JSON.stringify({
+        name: this.newProject.name.trim(),
+        vault_root: this.newProject.vault_root.trim(),
+        cwd_patterns: patterns,
+        auto_ingest: this.newProject.auto_ingest,
+        init_structure: this.newProject.init_structure,
+      });
+      const r = await fetch('/api/projects', {
+        method: 'POST', headers: {'Content-Type': 'application/json'}, body,
+      });
+      const d = await r.json();
+      if (!r.ok) { toast('error', 'Ошибка: ' + (d.error || r.status)); return; }
+      this.showNewProjectDialog = false;
+      this.newProject = { name: '', vault_root: '', cwd_patterns_raw: '', auto_ingest: false, init_structure: true };
+      this.refresh();
+    },
+
+    async togglePrompt(name) {
+      this.openPrompts[name] = !this.openPrompts[name];
+      if (this.openPrompts[name] && this.promptContent[name] === undefined) {
+        await this.reloadPrompt(name);
+      }
+    },
+
+    async reloadPrompt(name) {
+      this.promptLoading[name] = true;
+      try {
+        const r = await fetch('/api/prompts/' + encodeURIComponent(name));
+        const d = await r.json();
+        if (!r.ok) { toast('error', 'Ошибка: ' + (d.error || r.status)); return; }
+        this.promptContent[name] = d.content;
+        this._originals[name] = d.content;
+        this.promptDirty[name] = false;
+      } catch (e) {
+        toast('error', 'Ошибка загрузки: ' + e.message);
+      } finally {
+        this.promptLoading[name] = false;
+      }
+    },
+
+    async savePrompt(name) {
+      this.promptSaving[name] = true;
+      try {
+        const body = JSON.stringify({ content: this.promptContent[name] });
+        const r = await fetch('/api/prompts/' + encodeURIComponent(name), {
+          method: 'PUT', headers: {'Content-Type': 'application/json'}, body,
+        });
+        const d = await r.json();
+        if (!r.ok) { toast('error', 'Ошибка: ' + (d.error || r.status)); return; }
+        this._originals[name] = this.promptContent[name];
+        this.promptDirty[name] = false;
+        this.refresh();
+      } finally {
+        this.promptSaving[name] = false;
+      }
+    },
+
+    // Выбор папки через нативный Windows-диалог
+    async _pickFolder(initial, title) {
+      try {
+        const r = await fetch('/api/pick-folder', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ initial_path: initial || '', title: title || '' }),
+        });
+        const d = await r.json();
+        if (!r.ok || d.error) {
+          toast('error', 'Не удалось открыть проводник: ' + (d.error || r.status));
+          return null;
+        }
+        if (d.cancelled) return null;
+        return d.path;
+      } catch (e) {
+        toast('error', 'Ошибка: ' + e.message);
+        return null;
+      }
+    },
+
+    _extractFolderName(path) {
+      // Извлекает последний сегмент пути
+      const parts = (path || '').replace(/\\/g, '/').split('/').filter(Boolean);
+      return parts[parts.length - 1] || '';
+    },
+
+    async pickFolderForPattern(projectName, idx) {
+      const current = (this.patternsDraft[projectName] || [])[idx] || '';
+      const path = await this._pickFolder(current, `Выбери папку для проекта «${projectName}»`);
+      if (!path) return;
+      this.pickScope = {
+        show: true, path,
+        folderName: this._extractFolderName(path),
+        choices: { exact: false, with_subfolders: true, anywhere: false },
+        target: { type: 'pattern', projectName, idx },
+      };
+    },
+
+    async pickFolderForVaultRoot() {
+      const path = await this._pickFolder(this.newProject.vault_root || '', 'Выбери папку базы знаний');
+      if (!path) return;
+      this.newProject.vault_root = path;
+    },
+
+    async pickFolderForNewPattern() {
+      const path = await this._pickFolder('', 'Выбери папку для привязки к проекту');
+      if (!path) return;
+      this.pickScope = {
+        show: true, path,
+        folderName: this._extractFolderName(path),
+        choices: { exact: false, with_subfolders: true, anywhere: false },
+        target: { type: 'new_pattern' },
+      };
+    },
+
+    // Строит актуальный список шаблонов на основе выбранных чекбоксов.
+    // Дедупликация: без повторов (exact + with_subfolders оба содержат path).
+    pickedPatterns() {
+      const { path, folderName, choices } = this.pickScope;
+      if (!path) return [];
+      const out = [];
+      const push = (p) => { if (!out.includes(p)) out.push(p); };
+      if (choices.exact) push(path);
+      if (choices.with_subfolders) { push(path); push(path + '/*'); }
+      if (choices.anywhere) push('*' + folderName + '*');
+      return out;
+    },
+
+    applyPickScope() {
+      const patterns = this.pickedPatterns();
+      if (patterns.length === 0) return;
+      const target = this.pickScope.target;
+
+      if (target.type === 'pattern') {
+        // Редактирование существующего: первый шаблон заменяет текущую строку,
+        // остальные — добавляются в конец списка.
+        this.patternsDraft[target.projectName][target.idx] = patterns[0];
+        for (let i = 1; i < patterns.length; i++) {
+          this.patternsDraft[target.projectName].push(patterns[i]);
+        }
+      } else if (target.type === 'new_pattern') {
+        const existing = (this.newProject.cwd_patterns_raw || '').trim();
+        const addition = patterns.join('\n');
+        this.newProject.cwd_patterns_raw = existing ? existing + '\n' + addition : addition;
+      }
+      this.pickScope.show = false;
+      toast('ok', `Добавлено шаблонов: ${patterns.length}. Нажми «💾 Сохранить» чтобы применить.`, 5000);
+    },
+
+    formatSize(b) {
+      if (b < 1024) return b + ' B';
+      if (b < 1024*1024) return (b/1024).toFixed(1) + ' KB';
+      return (b/1024/1024).toFixed(1) + ' MB';
+    },
+  };
+}
+// Отслеживаем dirty status для всех открытых промптов простой проверкой
+document.addEventListener('alpine:init', () => {
+  // noop — promptDirty обновляется в savePrompt/reloadPrompt
+});
+</script>
+{% endblock %}

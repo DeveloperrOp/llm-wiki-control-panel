@@ -1,0 +1,59 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+venv/
+.venv/
+env/
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- Editor ---
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# --- User's private data (CRITICAL — must never be committed) ---
+config/project-map.json      # contains absolute paths to user's vaults
+state/                        # operational state: hook-log, jobs, active sessions
+.unassigned/                  # user's unassigned Claude Code sessions
+tmp/                          # audit artifacts, test results, scratch space
+.playwright-mcp/              # playwright test artifacts
+
+# --- Backups of edited prompts (user's local tweaks) ---
+prompts/*.bak
+prompts/*.md.bak
+
+# --- Per-vault backups (created automatically by deterministic operations) ---
+.backups/
+*/.backups/
+
+# --- Vault content — never commit user's knowledge base ---
+# If you clone this repo into the same directory as your vault,
+# these patterns prevent accidental commit of user content:
+raw/
+wiki/
+GUIDE.md.bak
+index.md
+log.md
+log-archive.md
+overview.md
+
+# NOTE: CLAUDE.md is intentionally kept in the repo root
+# (it's our project-level instructions for Claude Code when installing).
+# User vault CLAUDE.md lives inside their vault folders — covered by raw/ + wiki/ patterns.
+
+# --- Runtime artifacts ---
+*.log
+fuzz-results.json
+perf-results.json

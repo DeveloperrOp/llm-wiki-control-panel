@@ -1,0 +1,19 @@
+# LLM Wiki Control Panel dependencies
+# Install: pip install -r requirements.txt  (or pip3 on macOS/Linux)
+
+# Web server (dashboard)
+Flask>=3.0,<4.0
+
+# Cron-scheduled lint runs
+APScheduler>=3.10,<4.0
+
+# Cross-process file locking for jobs.json, active-sessions.json, session-dumps.json, project-map.json
+# Without this package, the system falls back to no-locking mode — works for single-process,
+# but occasional races on concurrent writes are possible. Strongly recommended.
+filelock>=3.12
+
+# --- Optional, used only by tests/ ---
+# requests: fuzz-tests and e2e against the dashboard
+# psutil: memory benchmarks in tests/perf.py
+requests>=2.31
+psutil>=5.9

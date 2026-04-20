@@ -1,0 +1,1290 @@
+{% extends "base.html" %}
+
+{% block title %}{{ project_name }} · Control Panel{% endblock %}
+
+{% block head_extra %}
+<style>
+  [x-cloak] { display: none !important; }
+</style>
+{% endblock %}
+
+{% block breadcrumbs %}
+<span class="text-gray-300 ml-2">/</span>
+<span class="text-sm text-gray-700 font-medium">{{ project_name }}</span>
+{% endblock %}
+
+{% block content %}
+<script>window.__PROJECT_NAME__ = {{ project_name | tojson }};</script>
+<div x-data="projectPage(window.__PROJECT_NAME__)" x-init="init()" class="space-y-8">
+
+  <!-- Заголовок + быстрые действия -->
+  <div class="flex items-center justify-between">
+    <div class="flex items-center gap-3">
+      <span class="text-3xl">🗂</span>
+      <div>
+        <h2 class="text-2xl font-semibold" x-text="project?.name || 'Загрузка…'"></h2>
+        <p class="text-xs text-gray-500 font-mono" x-text="project?.vault_root"></p>
+      </div>
+    </div>
+    <div class="flex items-center gap-2">
+      <span class="badge" :class="project?.auto_ingest ? 'badge-green' : 'badge-gray'"
+            :title="project?.auto_ingest ? 'Авто-режим: новые диалоги Claude Code сами превращаются в страницы базы знаний' : 'Ручной режим: новые диалоги только сохраняются, обработка вручную'"
+            x-text="project?.auto_ingest ? '🤖 Авто' : '🧑 Вручную'"></span>
+      <button @click="refresh()" class="btn btn-secondary text-sm" :disabled="busy || refreshing" title="Обновить данные на странице">
+        <span x-show="!(busy || refreshing)">🔄 Обновить</span>
+        <span x-show="busy || refreshing" x-cloak>⏳ …</span>
+      </button>
+      <a href="/" class="btn btn-secondary text-sm">← Главная</a>
+    </div>
+  </div>
+
+  <!-- 🎯 Привязка проекта -->
+  <section x-show="project" x-cloak class="bg-white border border-gray-200 rounded-lg p-3">
+    <div class="flex items-start justify-between gap-3 flex-wrap">
+      <div class="flex-1 min-w-0">
+        <h4 class="text-sm font-semibold mb-2 flex items-center gap-2">
+          🎯 Привязка проекта
+          <button @click="showBindingDetails = !showBindingDetails" class="text-xs text-gray-500 hover:text-gray-700 cursor-pointer"
+                  x-text="showBindingDetails ? '▲ свернуть' : '▼ подробнее'"></button>
+        </h4>
+        <!-- Короткая строка -->
+        <div class="text-xs text-gray-700 space-y-1">
+          <div class="flex items-start gap-2">
+            <span class="text-gray-500 w-44 shrink-0" title="Абсолютный путь к папке, где лежат raw/ и wiki/ проекта">📁 Папка базы знаний:</span>
+            <span class="font-mono text-xs break-all" x-text="project?.vault_root"></span>
+          </div>
+          <div class="flex items-start gap-2">
+            <span class="text-gray-500 w-44 shrink-0" title="fnmatch-шаблоны путей, по которым сессии Claude Code привязываются к этому проекту">🎯 Папки для Claude Code:</span>
+            <div class="flex-1 min-w-0">
+              <template x-if="(project?.cwd_patterns || []).length === 0">
+                <span class="text-xs text-yellow-700">
+                  — не задано —
+                  <span class="text-gray-500" title="Сессии в любой папке будут попадать в «Непривязанные». Добавь шаблоны в /settings, чтобы сессии автоматически привязывались к этому проекту.">
+                    <span class="underline cursor-help">(что это значит?)</span>
+                  </span>
+                </span>
+              </template>
+              <template x-for="pat in (project?.cwd_patterns || [])" :key="pat">
+                <code class="inline-block text-xs bg-gray-50 border border-gray-200 rounded px-1.5 py-0.5 mr-1 mb-1 font-mono" x-text="pat"></code>
+              </template>
+            </div>
+          </div>
+        </div>
+
+        <!-- Расширенное описание -->
+        <div x-show="showBindingDetails" x-cloak class="mt-2 pt-2 border-t border-gray-100 text-xs text-gray-600 space-y-1">
+          <p>
+            <strong>Как это работает:</strong>
+            когда ты запускаешь <code>claude</code> в какой-то папке, хук <code>session-start</code> сверяет путь этой папки с каждым шаблоном из списка выше. Первый матч → сессия привязывается к этому проекту. Не совпало ни с одним → попадает в «📤 Непривязанные» на главной.
+          </p>
+          <p>
+            <strong>Синтаксис fnmatch</strong> (как wildcard в cmd): <code>*</code> = любые символы, <code>?</code> = один символ.
+            Примеры: <code>*/мой-проект</code> — папка с таким именем, <code>*/мой-проект/*</code> — и её подпапки, <code>*мой-проект*</code> — любое место в пути.
+          </p>
+          <p x-show="project?.vault_root">
+            <strong>Что кладётся в папку базы знаний:</strong> <code>raw/chats/</code> (транскрипты диалогов), <code>raw/articles/</code> (статьи), <code>wiki/</code> (страницы), <code>.backups/</code> (резервные копии), <code>index.md</code>, <code>log.md</code>, <code>CLAUDE.md</code>.
+          </p>
+        </div>
+      </div>
+      <a href="/settings#new-project" class="btn btn-secondary text-xs shrink-0" title="Перейти в настройки, чтобы изменить папки кода или папку базы знаний">⚙ Изменить</a>
+    </div>
+  </section>
+
+  <!-- Баннер активного импорта -->
+  <template x-for="imp in activeImports" :key="imp.id">
+    <div class="bg-blue-50 border border-blue-200 rounded-lg p-3 flex items-center gap-3" x-show="imp.status === 'running' || (imp.status === 'done' && imp.finished_at)">
+      <span class="text-2xl" x-text="imp.status === 'running' ? '⏳' : '✅'"></span>
+      <div class="flex-1 min-w-0">
+        <div class="flex items-center gap-2 mb-1">
+          <strong class="text-sm" x-text="imp.status === 'running' ? 'Идёт массовый импорт' : 'Импорт завершён'"></strong>
+          <span class="text-xs text-gray-600">
+            <span x-text="imp.done"></span> из <span x-text="imp.total"></span>
+            <span x-show="imp.skipped > 0" x-text="' · пропущено ' + imp.skipped"></span>
+            <span x-show="imp.errors > 0" class="text-red-600" x-text="' · ошибок ' + imp.errors"></span>
+          </span>
+          <span x-show="imp.trigger_ingest" class="badge badge-blue text-xs" title="Каждый диалог последовательно обрабатывается Claude">🤖 + обработка</span>
+        </div>
+        <!-- Progress bar -->
+        <div class="w-full bg-white rounded-full h-2 overflow-hidden border border-blue-200" x-show="imp.status === 'running'">
+          <div class="h-2 bg-blue-500 transition-all"
+               :style="'width: ' + Math.round((imp.done / Math.max(imp.total, 1)) * 100) + '%'"></div>
+        </div>
+        <p class="text-xs text-gray-500 mt-1 truncate" x-show="imp.current_source">
+          Сейчас: <span class="font-mono" x-text="imp.current_source"></span>
+        </p>
+      </div>
+      <button @click="dismissImport(imp.id)" x-show="imp.status !== 'running'"
+              class="btn btn-secondary text-xs" title="Скрыть уведомление">✕</button>
+    </div>
+  </template>
+
+  <!-- Статистика -->
+  <section class="grid grid-cols-2 md:grid-cols-4 gap-3" x-show="project" x-cloak>
+    <div class="bg-white rounded-lg border border-gray-200 p-3" title="Сохранённые транскрипты диалогов Claude Code в raw/chats/">
+      <p class="text-xs text-gray-500 mb-1">📥 Сохранено диалогов</p>
+      <p class="text-2xl font-semibold" x-text="chats.length"></p>
+    </div>
+    <div class="bg-white rounded-lg border border-gray-200 p-3" title="Страницы в wiki/ — сущности, концепции, саммари источников">
+      <p class="text-xs text-gray-500 mb-1">📚 Страниц базы знаний</p>
+      <p class="text-2xl font-semibold" x-text="wikiPages.length"></p>
+    </div>
+    <div class="bg-white rounded-lg border border-gray-200 p-3" title="Когда последний раз прогоняли проверку здоровья базы (lint)">
+      <p class="text-xs text-gray-500 mb-1">🧹 Последняя проверка</p>
+      <p class="text-sm font-mono" x-text="project?.last_lint_at || 'никогда'"></p>
+    </div>
+    <div class="bg-white rounded-lg border border-gray-200 p-3" title="Расписание авто-проверки в формате cron (настраивается на главной)">
+      <p class="text-xs text-gray-500 mb-1">⏰ Авто-проверка</p>
+      <p class="text-sm font-mono" x-text="project?.lint_schedule || '—'"></p>
+    </div>
+  </section>
+
+  <!-- Управление памятью: инструменты сокращения инжект-контекста -->
+  <section>
+    <div class="flex items-center justify-between mb-3">
+      <h3 class="text-xl font-semibold" title="Инструменты для управления объёмом памяти: если контекст (index.md + хвост log.md) начинает превышать лимит инжекта — используй эти кнопки чтобы сократить.">
+        🛠 Управление памятью
+      </h3>
+      <button @click="showMemoryTools = !showMemoryTools; if (showMemoryTools) { loadLogStats(); loadBackups(); }"
+              class="btn btn-secondary text-sm"
+              x-text="showMemoryTools ? '▲ Свернуть' : '▼ Развернуть'"></button>
+    </div>
+
+    <div x-show="showMemoryTools" x-cloak class="space-y-3">
+      <p class="text-sm text-gray-600">
+        Здесь собраны инструменты, которые помогают уложить <strong>инжект контекста</strong>
+        (то, что Claude видит при старте каждой сессии) в настроенный лимит.
+        Все операции <strong>обратимы</strong> — перед каждой создаётся резервная копия в <code class="text-xs">.backups/</code>,
+        её можно восстановить кнопкой ниже.
+      </p>
+
+      <!-- Tool 1: Архивирование log.md -->
+      <div class="bg-white rounded border border-gray-200 p-3">
+        <div class="flex items-start justify-between gap-3">
+          <div class="flex-1">
+            <h4 class="font-semibold">🧹 Архивировать старые записи log.md</h4>
+            <p class="text-sm text-gray-600 mt-1">
+              Оставляет в <code>log.md</code> последние N записей (по заголовкам <code>## [YYYY-MM-DD...]</code>),
+              остальные переносит в <code>log-archive.md</code>. Страницы в <code>wiki/</code> НЕ трогаются.
+            </p>
+            <p class="text-xs text-gray-500 mt-1">
+              <strong>Безопасно:</strong> все данные физически сохраняются (просто в другом файле). Claude в новой сессии не увидит архивные записи в инжекте, но может прочитать <code>log-archive.md</code> по запросу.
+            </p>
+            <template x-if="logStats?.exists">
+              <p class="text-xs text-gray-500 mt-2">
+                Сейчас в log.md: <strong x-text="logStats?.entries || 0"></strong> записей,
+                <strong x-text="formatSize(logStats?.size || 0)"></strong>.
+              </p>
+            </template>
+          </div>
+          <button @click="openArchiveLogDialog()" class="btn btn-primary text-sm"
+                  :disabled="!logStats?.exists">🧹 Архивировать…</button>
+        </div>
+      </div>
+
+      <!-- Tool 2: Claude оптимизация -->
+      <div class="bg-white rounded border border-gray-200 p-3">
+        <div class="flex items-start justify-between gap-3">
+          <div class="flex-1">
+            <h4 class="font-semibold">💡 Предложить сокращения через Claude</h4>
+            <p class="text-sm text-gray-600 mt-1">
+              Запускает <code>claude -p</code>, который прочитает <code>index.md</code> или <code>log.md</code> и предложит как сократить описания без потери смысла. Показывает предпросмотр перед применением — ты сам решаешь применять или нет.
+            </p>
+            <p class="text-xs text-gray-500 mt-1">
+              <strong>Средний риск:</strong> Claude может недооценить важность каких-то записей. Перед применением ты увидишь результат целиком и можешь отменить. При применении создастся резервная копия — можно откатить.
+            </p>
+            <p class="text-xs text-gray-500 mt-1">
+              <strong>Занимает:</strong> 15-90 секунд (ждёт ответа Claude).
+            </p>
+          </div>
+          <div class="flex flex-col gap-1">
+            <button @click="openOptimizeDialog('index.md')" class="btn btn-primary text-sm">💡 index.md</button>
+            <button @click="openOptimizeDialog('log.md')" class="btn btn-primary text-sm">💡 log.md</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tool 3: Разбиение index.md -->
+      <div class="bg-white rounded border border-gray-200 p-3">
+        <div class="flex items-start justify-between gap-3">
+          <div class="flex-1">
+            <h4 class="font-semibold">📂 Разбить index.md на под-индексы</h4>
+            <p class="text-sm text-gray-600 mt-1">
+              Разделяет монолитный <code>index.md</code> на <code>index-entities.md</code>, <code>index-concepts.md</code>, <code>index-sources.md</code>. Корневой <code>index.md</code> становится короткой навигационной страницей со ссылками на них.
+            </p>
+            <p class="text-xs text-gray-500 mt-1">
+              <strong>Плюсы:</strong> инжект в SessionStart резко уменьшится (читается только корневой).
+              <strong>Минусы:</strong> Claude в новой сессии не видит всех страниц сразу — чтобы найти нужную, сделает дополнительный <code>Read</code> под-индекса.
+              Подходит когда у тебя <strong>500+ страниц</strong>.
+            </p>
+            <p class="text-xs text-gray-500 mt-1">
+              <strong>Обратимо:</strong> кнопка «Слить обратно» соединит под-индексы в монолитный <code>index.md</code> и удалит их.
+            </p>
+          </div>
+          <div class="flex flex-col gap-1">
+            <button @click="openSplitIndex()" class="btn btn-primary text-sm">📂 Разбить…</button>
+            <button @click="confirmMergeIndex()" class="btn btn-secondary text-sm">🔀 Слить обратно</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Backup manager -->
+      <div class="bg-white rounded border border-gray-200 p-3">
+        <div class="flex items-center justify-between mb-2">
+          <div class="flex-1">
+            <h4 class="font-semibold">💾 Резервные копии <span class="text-sm text-gray-500 font-normal">(<span x-text="backups.length"></span>)</span></h4>
+            <p class="text-xs text-gray-500">Перед каждой деструктивной операцией в <code>.backups/</code> сохраняется копия изменённых файлов. Автоочистка: старше 30 дней и больше 10 на операцию — удаляются (работает при каждом новом бэкапе).</p>
+          </div>
+          <div class="flex items-center gap-1">
+            <button @click="cleanupBackups()" class="btn btn-secondary text-xs"
+                    title="Удалить бэкапы старше 30 дней, оставив минимум 10 самых свежих на каждый тип операции">🧹 Автоочистка</button>
+            <button @click="loadBackups()" class="btn btn-secondary text-xs">🔄 Обновить</button>
+          </div>
+        </div>
+        <template x-if="backups.length === 0">
+          <p class="text-sm text-gray-500">Пока нет резервных копий.</p>
+        </template>
+        <div class="space-y-1">
+          <template x-for="b in backups" :key="b.id">
+            <div class="flex items-center gap-2 text-sm py-1 border-t first:border-t-0">
+              <span class="font-mono text-xs" x-text="b.created_at"></span>
+              <span class="badge badge-gray text-xs" x-text="b.operation"></span>
+              <span class="flex-1 truncate text-xs text-gray-600" x-text="b.description || b.files.join(', ')"></span>
+              <span class="text-xs text-gray-500" x-text="formatSize(b.size)"></span>
+              <button @click="restoreBackup(b.id)" class="btn btn-secondary text-xs"
+                      title="Восстановить файлы из этой копии (текущее состояние автоматически сохранится в новую копию pre-restore)">↶ Восстановить</button>
+              <button @click="deleteBackup(b.id)" class="btn btn-danger text-xs" title="Удалить эту копию навсегда">✕</button>
+            </div>
+          </template>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Инжект-контекст в сессию -->
+  <section id="inject" x-show="inject" x-cloak>
+    <div class="bg-white rounded-lg border p-4 shadow-sm"
+         :class="inject?.status === 'over' ? 'border-red-300 bg-red-50' : (inject?.status === 'warn' ? 'border-yellow-300 bg-yellow-50' : 'border-gray-200')">
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="text-xl font-semibold flex items-center gap-2" title="Что Claude увидит при старте каждой сессии этого проекта: index.md + хвост log.md. Помогает ему быть в курсе контекста.">
+          <span>💉</span>
+          <span>Контекст для Claude <span class="text-sm text-gray-400 font-normal">(инжект при старте сессии)</span></span>
+          <span class="badge text-xs" :class="contextBadgeClass(inject)"
+                x-text="inject?.status === 'over' ? '⚠ превышен' : (inject?.status === 'warn' ? 'почти лимит' : '✅ норма')"></span>
+        </h3>
+        <button @click="showInjectDetails = !showInjectDetails"
+                class="btn btn-secondary text-sm"
+                x-text="showInjectDetails ? '▲ Скрыть' : '▼ Показать содержимое'"></button>
+      </div>
+
+      <!-- Progress bar -->
+      <div class="mb-3">
+        <div class="flex items-center justify-between text-xs text-gray-600 mb-1">
+          <span>Размер инжекта:</span>
+          <span>
+            <strong x-text="inject?.raw_size || 0"></strong>
+            /
+            <span x-text="inject?.limit || 0"></span>
+            символов
+            <span x-show="inject?.truncated" class="text-red-600 font-semibold">· ⚠ обрезается!</span>
+          </span>
+        </div>
+        <div class="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
+          <div class="h-2 transition-all"
+               :class="inject?.status === 'over' ? 'bg-red-500' : (inject?.status === 'warn' ? 'bg-yellow-500' : 'bg-green-500')"
+               :style="'width: ' + Math.min(100, ((inject?.raw_size || 0) / (inject?.limit || 1)) * 100) + '%'"></div>
+        </div>
+        <div class="flex items-center justify-between text-xs text-gray-500 mt-1">
+          <span>0</span>
+          <span x-text="'Warn: ' + (inject?.warn_threshold || 0)"></span>
+          <span x-text="'Limit: ' + (inject?.limit || 0)"></span>
+        </div>
+      </div>
+
+      <p class="text-sm text-gray-700 mb-2">
+        <template x-if="inject?.status === 'ok'">
+          <span>✅ Норма. Весь index.md + tail log.md помещается в лимит без обрезания.</span>
+        </template>
+        <template x-if="inject?.status === 'warn'">
+          <span>⚠ Приближается к лимиту. Стоит присмотреть за размером index/log.</span>
+        </template>
+        <template x-if="inject?.status === 'over'">
+          <span class="text-red-700">🚨 Превышает лимит — часть контекста обрезается на старте каждой сессии!
+          Меры: укоротить index.md (убрать лишние описания) или сократить хвост log.md (сейчас последние 30 строк).</span>
+        </template>
+      </p>
+
+      <!-- Полный preview -->
+      <div x-show="showInjectDetails" x-cloak class="mt-3 pt-3 border-t border-gray-200">
+        <p class="text-xs text-gray-500 mb-2">Это то, что Claude увидит на старте любой сессии этого проекта:</p>
+        <pre class="bg-gray-900 text-gray-100 rounded p-3 text-xs overflow-auto max-h-96" x-text="inject?.preview"></pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- Активные сессии -->
+  <section>
+    <h3 class="text-xl font-semibold mb-3" title="Открытые сейчас сессии Claude Code в этом проекте. Живые — те, где .jsonl-транскрипт обновлялся недавно.">
+      🔴 Открытые сессии
+      <span class="text-sm text-gray-500 font-normal" x-text="'(' + activeSessions.length + ')'"></span>
+    </h3>
+    <template x-if="activeSessions.length === 0">
+      <p class="text-sm text-gray-500">Сейчас нет открытых сессий в этом проекте. Когда запустишь Claude Code в папке, подходящей под <code title="шаблоны папок проекта">cwd_patterns</code> — сессия появится здесь.</p>
+    </template>
+    <div class="space-y-1">
+      <template x-for="s in activeSessions" :key="s.sid">
+        <div class="bg-white rounded border border-gray-200 p-2 flex items-center gap-2 text-sm">
+          <span class="badge" :class="s.alive ? 'badge-green' : 'badge-yellow'"
+                :title="s.alive ? 'Транскрипт обновлялся за последние 30 секунд — сессия живая' : 'Транскрипт не обновляется 30+ секунд — возможно Claude Code закрыт или зависнет'"
+                x-text="s.alive ? '🟢 живая' : '🟡 похоже закрыта'"></span>
+          <span class="font-mono text-xs" :title="'Полный идентификатор сессии: ' + s.sid" x-text="s.sid_short"></span>
+          <span class="font-mono text-xs text-gray-500 flex-1 truncate" :title="'Папка, где запущен Claude Code: ' + s.cwd_raw" x-text="s.cwd_raw"></span>
+          <span class="text-xs text-gray-500" :title="'Стартовала: ' + s.started_at" x-text="formatAge(s.age_sec) + ' назад'"></span>
+          <button x-show="!s.alive" @click="forceDump(s.sid)" class="btn btn-secondary text-xs"
+                  :disabled="busy" title="Принудительно сохранить транскрипт этой закрытой сессии в raw/chats/ сейчас (не дожидаясь следующего запуска Claude Code в той же папке)">🛟 Сохранить сейчас</button>
+        </div>
+      </template>
+    </div>
+  </section>
+
+  <!-- Чаты в raw/ -->
+  <section>
+    <div class="flex items-center justify-between mb-3">
+      <h3 class="text-xl font-semibold" title="Сохранённые транскрипты закрытых сессий Claude Code в raw/chats/. Каждый можно обработать → превратится в страницы базы знаний.">
+        📥 Сохранённые диалоги
+        <span class="text-sm text-gray-500 font-normal" x-text="'(' + chats.length + ')'"></span>
+      </h3>
+      <button @click="openImportDialog()" class="btn btn-secondary text-sm"
+              title="Массовый импорт старых диалогов Claude Code из любой папки (~/.claude/projects/) в этот проект">
+        📦 Импортировать архив
+      </button>
+    </div>
+    <template x-if="chats.length === 0">
+      <p class="text-sm text-gray-500">Пока ничего. Транскрипты сессий Claude Code попадут сюда автоматически, когда закроешь сессию (/clear, /logout или закрытие окна).</p>
+    </template>
+    <div class="space-y-1">
+      <template x-for="c in chats" :key="c.path">
+        <div class="bg-white rounded border border-gray-200 p-2 shadow-sm">
+          <div class="flex items-center gap-2 text-sm">
+            <span>📝</span>
+            <span class="badge text-xs" :class="c.ingested ? 'badge-green' : 'badge-yellow'"
+                  :title="c.ingested ? 'Этот диалог уже обрабатывали — страницы базы знаний из него созданы' : 'Ещё не обрабатывали. Нажми «📥 Обработать», чтобы извлечь знания.'"
+                  x-text="c.ingested ? '✅ обработан' : '⏳ не обработан'"></span>
+            <span class="font-mono text-xs flex-1 truncate" x-text="c.name"></span>
+            <span class="text-xs text-gray-500" x-text="c.mtime"></span>
+            <span class="badge badge-gray text-xs" x-text="formatSize(c.size)"></span>
+            <button @click="togglePreview(c.path)" class="btn btn-secondary text-xs" title="Посмотреть первые 2000 символов диалога">👁 Посмотреть</button>
+            <button @click="runIngest(c.path)" class="btn btn-primary text-xs" :disabled="busy"
+                    :title="c.ingested ? 'Обработать повторно (перегенерировать страницы)' : 'Обработать (ingest): Claude прочитает диалог и извлечёт сущности + концепции в страницы базы знаний'">
+              <span x-show="!c.ingested">📥 Обработать</span>
+              <span x-show="c.ingested">🔁 Обработать снова</span>
+            </button>
+            <button @click="deleteChat(c.path, c.ingested)" class="btn btn-danger text-xs" :disabled="busy"
+                    title="Удалить файл диалога из raw/chats/. Созданные из него wiki-страницы НЕ удаляются — правь или откатывай бэкапом отдельно.">
+              🗑 Удалить
+            </button>
+          </div>
+          <div x-show="previews[c.path]" x-cloak class="mt-2 p-2 bg-gray-50 rounded border border-gray-200 text-xs font-mono max-h-64 overflow-auto">
+            <pre x-text="previews[c.path]"></pre>
+          </div>
+        </div>
+      </template>
+    </div>
+  </section>
+
+  <!-- DIALOG: Разбиение index.md -->
+  <div x-show="splitDialog.show" x-cloak class="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+    <div class="bg-white rounded-lg w-full max-w-6xl p-5 shadow-xl max-h-[90vh] flex flex-col">
+      <h3 class="text-lg font-semibold mb-2">📂 Разбить <code>index.md</code> на под-индексы</h3>
+
+      <template x-if="splitDialog.loading">
+        <p class="text-sm text-gray-500">⏳ Анализирую index.md…</p>
+      </template>
+
+      <template x-if="!splitDialog.loading && splitDialog.analysis">
+        <div class="flex-1 min-h-0 flex flex-col">
+          <template x-if="splitDialog.analysis.already_split">
+            <p class="text-sm text-yellow-700 bg-yellow-50 border border-yellow-200 p-2 rounded mb-2">
+              ⚠ Под-индексы <strong>уже существуют</strong>. Операция перезапишет их (перед этим создастся резервная копия).
+            </p>
+          </template>
+          <template x-if="splitDialog.analysis.partial_split">
+            <p class="text-sm text-orange-700 bg-orange-50 border border-orange-200 p-2 rounded mb-2">
+              ⚠ <strong>Частичный split:</strong> существуют под-индексы
+              <span x-text="(splitDialog.analysis.existing_subindices || []).join(', ')"></span>,
+              но не все. Разбиение перезапишет существующие и создаст недостающие (создастся резервная копия).
+            </p>
+          </template>
+
+          <p class="text-sm text-gray-600 mb-2">
+            Найдено секций: <strong x-text="splitDialog.analysis.sections.length"></strong>.
+            Новый корневой <code>index.md</code>: <strong x-text="splitDialog.analysis.new_root_chars"></strong> символов
+            (было <strong x-text="splitDialog.analysis.original_chars"></strong>).
+          </p>
+
+          <div class="text-xs mb-3">
+            <p class="font-semibold mb-1">Куда попадёт каждая секция:</p>
+            <ul class="space-y-0.5">
+              <template x-for="s in splitDialog.analysis.sections" :key="s.title">
+                <li>
+                  <span class="font-mono" x-text="s.title"></span>
+                  → <span class="badge badge-blue text-xs" x-text="s.target"></span>
+                  <span class="text-gray-500" x-text="'(' + s.lines + ' строк)'"></span>
+                </li>
+              </template>
+            </ul>
+          </div>
+
+          <div class="grid grid-cols-2 gap-3 flex-1 min-h-0">
+            <div class="flex flex-col min-h-0">
+              <h4 class="text-sm font-semibold mb-1">📄 Новый корневой index.md</h4>
+              <pre class="text-xs bg-gray-50 border border-gray-200 rounded p-2 overflow-auto flex-1" x-text="splitDialog.analysis.new_root_preview"></pre>
+            </div>
+            <div class="flex flex-col min-h-0 gap-2 overflow-auto">
+              <template x-for="(body, fname) in splitDialog.analysis.sub_previews" :key="fname">
+                <div>
+                  <h4 class="text-sm font-semibold mb-1">📑 <span x-text="fname"></span></h4>
+                  <pre class="text-xs bg-blue-50 border border-blue-200 rounded p-2 overflow-auto" style="max-height:200px" x-text="body"></pre>
+                </div>
+              </template>
+            </div>
+          </div>
+
+          <p class="text-xs text-gray-500 mt-2">
+            Перед операцией создастся резервная копия всех затронутых файлов. Можно будет откатить через «💾 Резервные копии» или кнопку «🔀 Слить обратно».
+          </p>
+          <div class="flex items-center justify-end gap-2 mt-3">
+            <button @click="splitDialog.show = false" class="btn btn-secondary">Отмена</button>
+            <button @click="confirmSplitIndex()" class="btn btn-primary"
+                    :disabled="splitDialog.busy || !splitDialog.analysis.can_split">
+              <span x-show="!splitDialog.busy">📂 Выполнить разбиение</span>
+              <span x-show="splitDialog.busy" x-cloak>⏳ …</span>
+            </button>
+          </div>
+        </div>
+      </template>
+    </div>
+  </div>
+
+  <!-- DIALOG: Claude оптимизация (side-by-side preview) -->
+  <div x-show="optimizeDialog.show" x-cloak class="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+    <div class="bg-white rounded-lg w-full max-w-6xl p-5 shadow-xl max-h-[90vh] flex flex-col">
+      <h3 class="text-lg font-semibold mb-2">💡 Сокращение <code x-text="optimizeDialog.file"></code> через Claude</h3>
+
+      <!-- Шаг 1: параметры -->
+      <template x-if="optimizeDialog.stage === 'setup'">
+        <div>
+          <label class="block text-sm font-medium mb-1">Целевой размер (символов)</label>
+          <select x-model.number="optimizeDialog.targetChars" class="w-full border rounded px-3 py-2 text-sm mb-2">
+            <option :value="2000">~2 000 (очень компактно)</option>
+            <option :value="3000">~3 000</option>
+            <option :value="5000">~5 000 (рекомендуется)</option>
+            <option :value="7000">~7 000</option>
+            <option :value="10000">~10 000</option>
+          </select>
+          <p class="text-xs text-gray-500 mb-4">
+            Текущий размер: <strong x-text="optimizeDialog.currentChars"></strong> символов.
+            Claude попытается уместить в указанный лимит (±10%).
+          </p>
+          <div class="flex items-center justify-end gap-2">
+            <button @click="optimizeDialog.show = false" class="btn btn-secondary">Отмена</button>
+            <button @click="runOptimize()" class="btn btn-primary" :disabled="optimizeDialog.busy">
+              <span x-show="!optimizeDialog.busy">▶ Запустить Claude</span>
+              <span x-show="optimizeDialog.busy" x-cloak>⏳ Claude работает (15-90 сек)…</span>
+            </button>
+          </div>
+        </div>
+      </template>
+
+      <!-- Шаг 2: предпросмотр результата -->
+      <template x-if="optimizeDialog.stage === 'preview'">
+        <div class="flex-1 min-h-0 flex flex-col">
+          <p class="text-sm text-gray-600 mb-2">
+            <strong>Было:</strong> <span x-text="optimizeDialog.originalChars"></span> символов •
+            <strong>Стало:</strong> <span x-text="optimizeDialog.suggestedChars"></span> символов •
+            <strong class="text-green-700">Экономия:</strong>
+            <span x-text="(optimizeDialog.originalChars - optimizeDialog.suggestedChars) + ' символов ('"></span><span x-text="Math.round((1 - optimizeDialog.suggestedChars / optimizeDialog.originalChars) * 100)"></span>%)
+          </p>
+          <div class="grid grid-cols-2 gap-3 flex-1 min-h-0">
+            <div class="flex flex-col min-h-0">
+              <h4 class="text-sm font-semibold mb-1">📄 Оригинал</h4>
+              <pre class="text-xs bg-red-50 border border-red-200 rounded p-2 overflow-auto flex-1" x-text="optimizeDialog.original"></pre>
+            </div>
+            <div class="flex flex-col min-h-0">
+              <h4 class="text-sm font-semibold mb-1">✨ Предложение Claude</h4>
+              <pre class="text-xs bg-green-50 border border-green-200 rounded p-2 overflow-auto flex-1" x-text="optimizeDialog.suggested"></pre>
+            </div>
+          </div>
+          <p class="text-xs text-gray-500 mt-2">
+            ⚠ Посмотри внимательно: не потерял ли Claude что-то важное. При применении будет создана резервная копия — можно откатить через «💾 Резервные копии».
+          </p>
+          <div class="flex items-center justify-end gap-2 mt-3">
+            <button @click="optimizeDialog.show = false" class="btn btn-secondary">Отмена</button>
+            <button @click="optimizeDialog.stage = 'setup'" class="btn btn-secondary">← Вернуться</button>
+            <button @click="applyOptimize()" class="btn btn-primary" :disabled="optimizeDialog.busy">
+              <span x-show="!optimizeDialog.busy">✅ Применить</span>
+              <span x-show="optimizeDialog.busy" x-cloak>⏳ …</span>
+            </button>
+          </div>
+        </div>
+      </template>
+    </div>
+  </div>
+
+  <!-- DIALOG: архивирование log.md -->
+  <div x-show="archiveDialog.show" x-cloak class="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+    <div class="bg-white rounded-lg w-full max-w-2xl p-5 shadow-xl max-h-[90vh] flex flex-col">
+      <h3 class="text-lg font-semibold mb-2">🧹 Архивировать log.md</h3>
+      <p class="text-sm text-gray-600 mb-3">
+        Сейчас в журнале <strong x-text="logStats?.entries || 0"></strong> записей
+        (<strong x-text="formatSize(logStats?.size || 0)"></strong>).
+        Старые переедут в <code>log-archive.md</code>, в <code>log.md</code> останутся только последние.
+      </p>
+      <label class="block text-sm font-medium mb-1">Сколько записей оставить в log.md?</label>
+      <select x-model.number="archiveDialog.keepLast" class="w-full border rounded px-3 py-2 text-sm mb-2">
+        <option :value="5">5 последних</option>
+        <option :value="10">10 последних</option>
+        <option :value="15">15 последних</option>
+        <option :value="20">20 последних (рекомендуется)</option>
+        <option :value="30">30 последних</option>
+        <option :value="50">50 последних</option>
+      </select>
+
+      <!-- Preview: какие записи уедут, какие останутся -->
+      <template x-if="logStats?.items">
+        <div class="flex-1 min-h-0 flex flex-col mt-2 border-t pt-3">
+          <div class="grid grid-cols-2 gap-3 flex-1 min-h-0 overflow-hidden">
+            <!-- Уедут в архив -->
+            <div class="flex flex-col min-h-0">
+              <h4 class="text-xs font-semibold text-red-700 mb-1 flex items-center gap-1">
+                📦 Уедут в log-archive.md
+                <span class="text-red-500" x-text="'(' + Math.max(0, (logStats.items.length - archiveDialog.keepLast)) + ')'"></span>
+              </h4>
+              <div class="border border-red-200 bg-red-50 rounded text-xs overflow-auto flex-1" style="max-height: 35vh">
+                <template x-for="it in logStats.items.slice(0, Math.max(0, logStats.items.length - archiveDialog.keepLast))" :key="it.idx">
+                  <div class="p-1.5 border-b border-red-100 last:border-0 truncate" :title="it.title">
+                    <span class="font-mono text-gray-600" x-text="'(' + it.chars + ')'"></span>
+                    <span x-text="it.title.replace(/^##\s*/, '')"></span>
+                  </div>
+                </template>
+                <template x-if="Math.max(0, (logStats.items.length - archiveDialog.keepLast)) === 0">
+                  <p class="p-2 text-gray-500">Нечего архивировать.</p>
+                </template>
+              </div>
+            </div>
+            <!-- Останутся -->
+            <div class="flex flex-col min-h-0">
+              <h4 class="text-xs font-semibold text-green-700 mb-1 flex items-center gap-1">
+                ✅ Останутся в log.md
+                <span class="text-green-500" x-text="'(' + Math.min(archiveDialog.keepLast, logStats.items.length) + ')'"></span>
+              </h4>
+              <div class="border border-green-200 bg-green-50 rounded text-xs overflow-auto flex-1" style="max-height: 35vh">
+                <template x-for="it in logStats.items.slice(Math.max(0, logStats.items.length - archiveDialog.keepLast))" :key="it.idx">
+                  <div class="p-1.5 border-b border-green-100 last:border-0 truncate" :title="it.title">
+                    <span class="font-mono text-gray-600" x-text="'(' + it.chars + ')'"></span>
+                    <span x-text="it.title.replace(/^##\s*/, '')"></span>
+                  </div>
+                </template>
+              </div>
+            </div>
+          </div>
+        </div>
+      </template>
+
+      <p class="text-xs text-gray-500 mt-3">
+        Перед операцией создастся резервная копия — восстановить можно будет через «💾 Резервные копии».
+      </p>
+      <div class="flex items-center justify-end gap-2 mt-3">
+        <button @click="archiveDialog.show = false" class="btn btn-secondary">Отмена</button>
+        <button @click="confirmArchiveLog()" class="btn btn-primary" :disabled="archiveDialog.busy">
+          <span x-show="!archiveDialog.busy">🧹 Архивировать</span>
+          <span x-show="archiveDialog.busy" x-cloak>⏳ …</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Последние операции проекта -->
+  <section>
+    <h3 class="text-xl font-semibold mb-3" title="История обработок (ingest) и проверок (lint) этого проекта: когда, кто запустил, с каким результатом">
+      🔧 История операций
+      <span class="text-sm text-gray-500 font-normal" x-text="'(' + projectJobs.length + ')'"></span>
+    </h3>
+    <div class="space-y-2">
+      <template x-for="j in projectJobs" :key="j.id">
+        <div class="bg-white rounded border border-gray-200 p-2 flex items-center gap-2 text-sm">
+          <span class="badge" :class="j.status === 'running' ? 'badge-blue' : (j.status === 'done' ? 'badge-green' : 'badge-red')"
+                x-text="statusLabel(j.status)" :title="'Техническое: ' + j.status"></span>
+          <span class="font-mono text-xs" x-text="typeLabel(j.type)" :title="'Техническое: ' + j.type"></span>
+          <span class="badge badge-gray text-xs" x-text="triggerLabel(j.trigger)" :title="'Техническое: trigger=' + j.trigger"></span>
+          <span class="text-xs text-gray-500 ml-auto" x-text="j.finished_at || j.started_at"></span>
+        </div>
+      </template>
+      <template x-if="projectJobs.length === 0">
+        <p class="text-sm text-gray-500">По этому проекту ещё не было операций.</p>
+      </template>
+    </div>
+  </section>
+
+  <!-- Wiki-страницы -->
+  <section>
+    <h3 class="text-xl font-semibold mb-3" title="Страницы базы знаний, сгенерированные Claude из диалогов и документов">
+      📚 Страницы базы знаний
+      <span class="text-sm text-gray-500 font-normal" x-text="'(' + wikiPages.length + ')'"></span>
+    </h3>
+    <template x-for="group in groupedWikiPages" :key="group.type">
+      <div class="mb-4">
+        <h4 class="text-sm font-semibold text-gray-600 uppercase mb-2">
+          <span class="badge" :class="badgeClassFor(group.type)" x-text="typeNameRu(group.type)" :title="'Тип: ' + group.type"></span>
+          <span x-text="'(' + group.pages.length + ')'"></span>
+        </h4>
+        <div class="space-y-1">
+          <template x-for="p in group.pages" :key="p.path">
+            <div class="bg-white rounded border border-gray-200 p-2 flex items-center gap-2 text-sm">
+              <span class="font-medium flex-1 truncate" x-text="p.name"></span>
+              <span class="text-xs font-mono text-gray-500" x-text="p.stem"></span>
+              <span class="text-xs text-gray-400" x-text="p.updated || p.mtime"></span>
+              <span class="badge badge-gray text-xs" x-text="p.words + ' слов'"></span>
+            </div>
+          </template>
+        </div>
+      </div>
+    </template>
+  </section>
+
+  <!-- DIALOG: Импорт архивных сессий -->
+  <div x-show="importDialog.show" x-cloak class="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+    <div class="bg-white rounded-lg max-w-3xl w-full p-5 shadow-xl max-h-[90vh] flex flex-col">
+      <h3 class="text-lg font-semibold mb-3">📦 Импорт архивных сессий в «<span x-text="projectName"></span>»</h3>
+
+      <!-- Шаг 1: выбор папки -->
+      <div class="mb-3">
+        <label class="block text-sm font-medium mb-1" title="Все папки ~/.claude/projects/ с транскриптами. Subsession-прогоны (ingest/lint) уже отфильтрованы.">
+          1. Из какой папки импортировать диалоги?
+        </label>
+        <select x-model="importDialog.selectedFolder" @change="loadImportSessions()"
+                class="w-full border rounded px-3 py-2 text-sm">
+          <option value="">— Выбери папку —</option>
+          <template x-for="f in importDialog.folders" :key="f.encoded">
+            <option :value="f.encoded"
+                    x-text="f.cwd + '  (' + f.sessions_count + ' сессий, последняя ' + f.last_mtime + ')'"></option>
+          </template>
+        </select>
+      </div>
+
+      <!-- Шаг 2: список сессий -->
+      <template x-if="importDialog.selectedFolder && !importDialog.loading">
+        <div class="flex-1 min-h-0 flex flex-col">
+          <div class="flex items-center justify-between mb-2">
+            <label class="text-sm font-medium">2. Выбери сессии (<span x-text="importDialog.selected.length"></span> из <span x-text="importDialog.sessions.length"></span>)</label>
+            <div class="flex items-center gap-2 text-xs">
+              <button @click="importSelectAll(true)" class="btn btn-secondary text-xs">Всё</button>
+              <button @click="importSelectAll(false)" class="btn btn-secondary text-xs">Снять</button>
+              <button @click="importSelectPending()" class="btn btn-secondary text-xs" title="Выбрать только те, которых ещё нет в raw/chats/ этого проекта">Только новые</button>
+            </div>
+          </div>
+          <div class="border rounded overflow-auto flex-1 min-h-[180px]" style="max-height: 40vh">
+            <template x-for="s in importDialog.sessions" :key="s.sid">
+              <label class="flex items-start gap-2 p-2 border-b last:border-0 hover:bg-gray-50 cursor-pointer text-sm"
+                     :class="s.already_imported ? 'opacity-60' : ''">
+                <input type="checkbox" :value="s.sid" x-model="importDialog.selected" class="mt-1"
+                       :disabled="s.already_imported">
+                <div class="flex-1 min-w-0">
+                  <div class="flex items-center gap-2">
+                    <span class="font-mono text-xs" x-text="s.sid_short"></span>
+                    <span class="text-xs text-gray-500" x-text="s.mtime"></span>
+                    <span class="badge badge-gray text-xs" x-text="formatSize(s.size)"></span>
+                    <span x-show="s.already_imported" class="badge badge-green text-xs">✅ уже импортирован</span>
+                  </div>
+                  <p class="text-xs text-gray-600 mt-1 line-clamp-2" x-text="s.preview || '(нет превью)'"></p>
+                </div>
+              </label>
+            </template>
+            <template x-if="importDialog.sessions.length === 0">
+              <p class="text-sm text-gray-500 p-3">В этой папке нет сессий (только subsession'ы отфильтрованы).</p>
+            </template>
+          </div>
+        </div>
+      </template>
+      <template x-if="importDialog.loading">
+        <p class="text-sm text-gray-500 py-4">⏳ Загружаю список…</p>
+      </template>
+
+      <!-- Шаг 3: опции -->
+      <div class="mt-3 pt-3 border-t">
+        <label class="flex items-center gap-2 text-sm cursor-pointer" title="После импорта запустить Claude-обработку (ingest) по очереди для каждого диалога. Осторожно: долго и кушает API-лимиты.">
+          <input type="checkbox" x-model="importDialog.triggerIngest">
+          🤖 Запустить обработку (ingest) после импорта — последовательно
+        </label>
+        <p class="text-xs text-gray-500 mt-1">
+          Без галочки диалоги просто попадут в <code>raw/chats/</code> как файлы, обработать можно потом вручную.
+        </p>
+      </div>
+
+      <div class="flex items-center justify-end gap-2 mt-4">
+        <button @click="importDialog.show = false" class="btn btn-secondary">Отмена</button>
+        <button @click="confirmImport()" class="btn btn-primary"
+                :disabled="importDialog.selected.length === 0 || importDialog.busy">
+          <span x-show="!importDialog.busy" x-text="'📥 Импортировать (' + importDialog.selected.length + ')'"></span>
+          <span x-show="importDialog.busy" x-cloak>⏳ Запускаю…</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+function projectPage(name) {
+  return {
+    projectName: name,
+    project: null,
+    chats: [],
+    wikiPages: [],
+    groupedWikiPages: [],
+    activeSessions: [],
+    allJobs: [],
+    projectJobs: [],
+    previews: {},
+    busy: false,
+    refreshing: false,
+    inject: null,
+    showInjectDetails: false,
+    showBindingDetails: false,
+    showMemoryTools: false,
+    logStats: null,
+    backups: [],
+    archiveDialog: { show: false, busy: false, keepLast: 20 },
+    optimizeDialog: {
+      show: false, busy: false, stage: 'setup',
+      file: '', currentChars: 0, targetChars: 5000,
+      original: '', suggested: '', originalChars: 0, suggestedChars: 0,
+    },
+    splitDialog: { show: false, loading: false, busy: false, analysis: null },
+    activeImports: [],
+    _lastImportStatuses: {},  // для toast при переходе running → done
+    _dismissedImports: new Set(),
+    importDialog: {
+      show: false, busy: false, loading: false,
+      folders: [], sessions: [], selected: [],
+      selectedFolder: '', triggerIngest: false,
+    },
+    _timer: null,
+
+    init() {
+      this.refresh();
+      this._timer = setInterval(() => this.refresh(), 5000);
+    },
+
+    async refresh() {
+      this.refreshing = true;
+      try {
+        const urls = [
+          '/api/project/' + encodeURIComponent(this.projectName),
+          '/api/jobs?limit=200',
+          '/api/inject-preview/' + encodeURIComponent(this.projectName),
+          '/api/project/' + encodeURIComponent(this.projectName) + '/active-sessions',
+        ];
+        const results = await Promise.allSettled(urls.map(u => fetch(u).then(r => r.ok ? r.json() : Promise.reject(r.status))));
+        const [detailsR, jobsR, injectR, activeR] = results;
+        if (detailsR.status === 'rejected') throw new Error('project details fetch failed');
+        const details = detailsR.value;
+        const jobs = jobsR.status === 'fulfilled' ? jobsR.value : { jobs: [] };
+        const inject = injectR.status === 'fulfilled' ? injectR.value : null;
+        const active = activeR.status === 'fulfilled' ? activeR.value : { items: [] };
+        this.project = details.project;
+        this.chats = details.chats || [];
+        this.wikiPages = details.wiki_pages || [];
+        this.groupedWikiPages = this._group(this.wikiPages);
+        this.allJobs = jobs.jobs || [];
+        this.projectJobs = this.allJobs.filter(j => j.project === this.projectName).slice(0, 30);
+        this.inject = inject;
+        this.activeSessions = active.items || [];
+        // Активные импорты этого проекта
+        try {
+          const impR = await fetch('/api/import-progress');
+          const impD = await impR.json();
+          const mine = (impD.imports || []).filter(i => i.project === this.projectName && !this._dismissedImports.has(i.id));
+          // Детектим переходы running → done — показываем toast
+          for (const imp of mine) {
+            const prev = this._lastImportStatuses[imp.id];
+            if (prev === 'running' && imp.status !== 'running') {
+              const total = imp.total, done = imp.done, skipped = imp.skipped, errors = imp.errors;
+              if (imp.status === 'done') {
+                toast('ok', `Импорт завершён: ${done - skipped - errors} новых, пропущено ${skipped}${errors ? ', ошибок ' + errors : ''}`, 7000);
+              } else {
+                toast('error', `Импорт завершился с ошибкой. Обработано ${done} из ${total}.`);
+              }
+            }
+            this._lastImportStatuses[imp.id] = imp.status;
+          }
+          this.activeImports = mine;
+        } catch (e) { /* ignore */ }
+        // Memory-tools блок: подгружаем только когда развёрнут (экономия запросов)
+        if (this.showMemoryTools) {
+          this.loadLogStats();
+          this.loadBackups();
+        }
+      } catch (e) {
+        console.error('refresh failed', e);
+        // Если сервер не отвечает — однократный дросселированный toast
+        if (!this._lastRefreshFailToast || Date.now() - this._lastRefreshFailToast > 30000) {
+          toast('error', 'Не удалось обновить страницу. Сервер отвечает с ошибкой.', 8000);
+          this._lastRefreshFailToast = Date.now();
+        }
+      } finally {
+        this.refreshing = false;
+      }
+    },
+
+    async forceDump(sid) {
+      if (!(await confirmDialog('Принудительно сохранить транскрипт этой сессии в raw/chats/?'))) return;
+      this.busy = true;
+      try {
+        const r = await fetch('/api/active-sessions/force-dump', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ sid }),
+        });
+        const d = await r.json();
+        if (!r.ok) { toast('error', 'Ошибка: ' + (d.error || r.status)); return; }
+        if (!d.dumped) toast('warn', 'Транскрипт не сохранён (вероятно, уже сохранён в последние 5 мин — сработал дедуп). Запись убрана из реестра.');
+      } catch (e) {
+        console.error(e);
+      } finally {
+        this.busy = false;
+        this.refresh();
+      }
+    },
+
+    formatAge(sec) {
+      if (!sec || sec < 0) return '—';
+      if (sec < 60) return sec + ' сек';
+      if (sec < 3600) return Math.floor(sec / 60) + ' мин';
+      if (sec < 86400) return Math.floor(sec / 3600) + ' ч';
+      return Math.floor(sec / 86400) + ' дн';
+    },
+
+    contextBadgeClass(inj) {
+      if (!inj) return 'badge-gray';
+      if (inj.status === 'over') return 'badge-red';
+      if (inj.status === 'warn') return 'badge-yellow';
+      return 'badge-green';
+    },
+
+    _group(pages) {
+      const order = ['overview', 'entity', 'concept', 'source'];
+      const buckets = {};
+      pages.forEach(p => {
+        const t = p.type || 'overview';
+        if (!buckets[t]) buckets[t] = [];
+        buckets[t].push(p);
+      });
+      return order.filter(t => buckets[t]).map(t => ({
+        type: t,
+        pages: buckets[t].sort((a, b) => a.name.localeCompare(b.name)),
+      })).concat(
+        Object.keys(buckets)
+          .filter(t => !order.includes(t))
+          .map(t => ({ type: t, pages: buckets[t] }))
+      );
+    },
+
+    badgeClassFor(type) {
+      return {
+        entity: 'badge-green',
+        concept: 'badge-blue',
+        source: 'badge-yellow',
+        overview: 'badge-purple',
+      }[type] || 'badge-gray';
+    },
+
+    typeNameRu(type) {
+      return ({
+        entity: 'сущности',
+        concept: 'концепции',
+        source: 'источники',
+        overview: 'обзор',
+      })[type] || type;
+    },
+
+    statusLabel(s) {
+      return ({ running: '⏳ идёт', done: '✅ готово', failed: '❌ ошибка' })[s] || s;
+    },
+    typeLabel(t) {
+      return ({ ingest: '📥 обработка', lint: '🔍 проверка' })[t] || t;
+    },
+    triggerLabel(t) {
+      return ({ manual: '🧑 вручную', auto: '🤖 автоматически', schedule: '⏰ по расписанию' })[t] || t;
+    },
+
+    async togglePreview(path) {
+      if (this.previews[path]) {
+        delete this.previews[path];
+        return;
+      }
+      try {
+        const r = await fetch('/api/chat/preview?path=' + encodeURIComponent(path));
+        const d = await r.json();
+        if (!r.ok) { toast('error', 'Ошибка: ' + (d.error || r.status)); return; }
+        this.previews[path] = d.preview + (d.truncated ? `\n\n… [обрезано, всего ${d.total_chars} символов]` : '');
+      } catch (e) { console.error(e); }
+    },
+
+    async runIngest(sourcePath) {
+      this.busy = true;
+      try {
+        const body = JSON.stringify({ project: this.projectName, source: sourcePath });
+        const r = await fetch('/api/ingest', { method: 'POST', headers: {'Content-Type': 'application/json'}, body });
+        const d = await r.json();
+        if (!r.ok) { toast('error', 'Ошибка: ' + (d.error || r.status)); return; }
+        toast('ok', 'Обработка запущена', 3000);
+        this.refresh();
+      } catch (e) {
+        toast('error', 'Ошибка сети: ' + e.message);
+      } finally {
+        this.busy = false;
+      }
+    },
+
+    async deleteChat(chatPath, ingested) {
+      const warn = ingested
+        ? 'Диалог уже обработан — созданные из него wiki-страницы НЕ будут удалены (останутся в базе знаний). Удалить только файл диалога?'
+        : 'Удалить файл диалога навсегда?';
+      if (!(await confirmDialog(warn))) return;
+      this.busy = true;
+      try {
+        const r = await fetch('/api/chat', {
+          method: 'DELETE',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ chat_path: chatPath }),
+        });
+        const d = await r.json();
+        if (!r.ok) { toast('error', 'Ошибка: ' + (d.error || r.status)); return; }
+        delete this.previews[chatPath];
+        toast('ok', 'Диалог удалён');
+        this.refresh();
+      } catch (e) {
+        toast('error', 'Ошибка: ' + e.message);
+      } finally {
+        this.busy = false;
+      }
+    },
+
+    formatSize(b) {
+      if (b < 1024) return b + ' B';
+      if (b < 1024*1024) return (b/1024).toFixed(1) + ' KB';
+      return (b/1024/1024).toFixed(1) + ' MB';
+    },
+
+    // ===== Управление памятью =====
+    async loadLogStats(withList) {
+      try {
+        const url = '/api/project/' + encodeURIComponent(this.projectName) + '/log-stats' + (withList ? '?list=1' : '');
+        const r = await fetch(url);
+        this.logStats = r.ok ? await r.json() : null;
+      } catch (e) { console.error(e); }
+    },
+
+    async loadBackups() {
+      try {
+        const r = await fetch('/api/project/' + encodeURIComponent(this.projectName) + '/backups');
+        const d = await r.json();
+        this.backups = d.backups || [];
+      } catch (e) { console.error(e); }
+    },
+
+    async openArchiveLogDialog() {
+      this.archiveDialog = { show: true, busy: false, keepLast: 20 };
+      // Загружаем детальный список (с заголовками каждой записи)
+      await this.loadLogStats(true);
+    },
+
+    async confirmArchiveLog() {
+      this.archiveDialog.busy = true;
+      try {
+        const r = await fetch('/api/project/' + encodeURIComponent(this.projectName) + '/archive-log', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ keep_last: this.archiveDialog.keepLast }),
+        });
+        const d = await r.json();
+        if (!r.ok) { toast('error', 'Ошибка: ' + (d.error || r.status)); return; }
+        toast('ok', `Архивировано: ${d.archived} записей, оставлено: ${d.kept}. Резервная копия создана.`);
+        this.archiveDialog.show = false;
+        await this.loadLogStats();
+        await this.loadBackups();
+        this.refresh();
+      } finally {
+        this.archiveDialog.busy = false;
+      }
+    },
+
+    async restoreBackup(id) {
+      if (!(await confirmDialog('Восстановить файлы из этой копии? Текущее состояние автоматически сохранится в новую копию «pre-restore».'))) return;
+      try {
+        const r = await fetch('/api/project/' + encodeURIComponent(this.projectName) + '/backups/' + encodeURIComponent(id) + '/restore', {
+          method: 'POST',
+        });
+        const d = await r.json();
+        if (!r.ok) { toast('error', 'Ошибка: ' + (d.error || r.status)); return; }
+        toast('ok', `Восстановлено: ${(d.restored || []).join(', ')}`);
+        await this.loadLogStats();
+        await this.loadBackups();
+        this.refresh();
+      } catch (e) { toast('error', 'Ошибка: ' + e.message); }
+    },
+
+    async deleteBackup(id) {
+      if (!(await confirmDialog('Удалить эту резервную копию навсегда?'))) return;
+      try {
+        const r = await fetch('/api/project/' + encodeURIComponent(this.projectName) + '/backups/' + encodeURIComponent(id), {
+          method: 'DELETE',
+        });
+        if (!r.ok) { const d = await r.json(); toast('error', 'Ошибка: ' + (d.error || r.status)); return; }
+        await this.loadBackups();
+      } catch (e) { toast('error', 'Ошибка: ' + e.message); }
+    },
+
+    async cleanupBackups() {
+      if (!(await confirmDialog('Удалить бэкапы старше 30 дней (кроме 10 самых свежих на каждый тип)?'))) return;
+      try {
+        const r = await fetch('/api/project/' + encodeURIComponent(this.projectName) + '/backups/cleanup', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({}),
+        });
+        const d = await r.json();
+        if (!r.ok) { toast('error', 'Ошибка: ' + (d.error || r.status)); return; }
+        const n = (d.deleted || []).length;
+        if (n === 0) {
+          toast('info', 'Нечего чистить — все бэкапы свежие или в топ-10 на операцию.');
+        } else {
+          toast('ok', `Удалено ${n} старых бэкапов. Осталось ${d.kept}.`);
+        }
+        await this.loadBackups();
+      } catch (e) { toast('error', 'Ошибка: ' + e.message); }
+    },
+
+    // ===== Claude оптимизация =====
+    async openOptimizeDialog(file) {
+      // currentChars: дёргаем через /api/project/<name> (там log_stats и чтение index.md),
+      // fallback на inject preview если API не дал точных данных.
+      let currentChars = 0;
+      try {
+        if (file === 'log.md') {
+          const r = await fetch('/api/project/' + encodeURIComponent(this.projectName) + '/log-stats');
+          if (r.ok) {
+            const d = await r.json();
+            currentChars = d.chars || 0;
+          }
+        } else if (file === 'index.md') {
+          // Оцениваем через inject.raw (он содержит index.md + хвост log.md).
+          currentChars = this.inject?.raw ? this.inject.raw.length : 0;
+        }
+      } catch (e) { /* offline — currentChars=0 */ }
+      this.optimizeDialog = {
+        show: true, busy: false, stage: 'setup',
+        file, currentChars, targetChars: 5000,
+        original: '', suggested: '', originalChars: 0, suggestedChars: 0,
+      };
+    },
+
+    async runOptimize() {
+      this.optimizeDialog.busy = true;
+      try {
+        const r = await fetch('/api/project/' + encodeURIComponent(this.projectName) + '/suggest-optimization', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            file: this.optimizeDialog.file,
+            target_chars: this.optimizeDialog.targetChars,
+          }),
+        });
+        const d = await r.json();
+        if (!r.ok) {
+          toast('error', 'Claude не справился: ' + (d.error || r.status) + ((d.stderr) ? ' — ' + d.stderr.slice(0,200) : ''));
+          return;
+        }
+        this.optimizeDialog.original = d.original;
+        this.optimizeDialog.suggested = d.suggested;
+        this.optimizeDialog.originalChars = d.original_chars;
+        this.optimizeDialog.suggestedChars = d.suggested_chars;
+        this.optimizeDialog.stage = 'preview';
+      } catch (e) {
+        toast('error', 'Ошибка: ' + e.message);
+      } finally {
+        this.optimizeDialog.busy = false;
+      }
+    },
+
+    async applyOptimize() {
+      if (!(await confirmDialog('Применить предложенные изменения? Резервная копия будет создана автоматически.'))) return;
+      this.optimizeDialog.busy = true;
+      try {
+        const r = await fetch('/api/project/' + encodeURIComponent(this.projectName) + '/apply-optimization', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            file: this.optimizeDialog.file,
+            new_content: this.optimizeDialog.suggested,
+          }),
+        });
+        const d = await r.json();
+        if (!r.ok) { toast('error', 'Ошибка: ' + (d.error || r.status)); return; }
+        toast('ok', `Применено. ${this.optimizeDialog.file}: ${d.size} байт. Откат — в «💾 Резервные копии».`);
+        this.optimizeDialog.show = false;
+        await this.loadLogStats();
+        await this.loadBackups();
+        this.refresh();
+      } finally {
+        this.optimizeDialog.busy = false;
+      }
+    },
+
+    // ===== Разбиение index.md =====
+    async openSplitIndex() {
+      this.splitDialog = { show: true, loading: true, busy: false, analysis: null };
+      try {
+        const r = await fetch('/api/project/' + encodeURIComponent(this.projectName) + '/index-analyze');
+        const d = await r.json();
+        if (!r.ok) { toast('error', 'Ошибка: ' + (d.error || r.status)); this.splitDialog.show = false; return; }
+        this.splitDialog.analysis = d;
+      } catch (e) {
+        toast('error', 'Ошибка: ' + e.message);
+        this.splitDialog.show = false;
+      } finally {
+        this.splitDialog.loading = false;
+      }
+    },
+
+    async confirmSplitIndex() {
+      if (!(await confirmDialog('Разбить index.md на под-индексы? Резервная копия будет создана.'))) return;
+      this.splitDialog.busy = true;
+      try {
+        const r = await fetch('/api/project/' + encodeURIComponent(this.projectName) + '/split-index', {
+          method: 'POST',
+        });
+        const d = await r.json();
+        if (!r.ok) { toast('error', 'Ошибка: ' + (d.error || r.status)); return; }
+        toast('ok', `Созданы: ${(d.written || []).join(', ')}. index.md: ${d.new_root_chars} символов.`);
+        this.splitDialog.show = false;
+        await this.loadBackups();
+        this.refresh();
+      } finally {
+        this.splitDialog.busy = false;
+      }
+    },
+
+    async confirmMergeIndex() {
+      if (!(await confirmDialog('Слить под-индексы обратно в index.md? Файлы index-entities.md / index-concepts.md / index-sources.md будут удалены. Резервная копия будет создана.'))) return;
+      try {
+        const r = await fetch('/api/project/' + encodeURIComponent(this.projectName) + '/merge-index', {
+          method: 'POST',
+        });
+        const d = await r.json();
+        if (!r.ok) { toast('error', 'Ошибка: ' + (d.error || r.status)); return; }
+        toast('ok', `Удалены: ${(d.deleted || []).join(', ')}. index.md: ${d.new_index_chars} символов.`);
+        await this.loadBackups();
+        this.refresh();
+      } catch (e) {
+        toast('error', 'Ошибка: ' + e.message);
+      }
+    },
+
+    dismissImport(id) {
+      this._dismissedImports.add(id);
+      this.activeImports = this.activeImports.filter(i => i.id !== id);
+    },
+
+    // ===== Импорт архивных сессий =====
+    async openImportDialog() {
+      this.importDialog = {
+        show: true, busy: false, loading: false,
+        folders: [], sessions: [], selected: [],
+        selectedFolder: '', triggerIngest: !!this.project?.auto_ingest,
+      };
+      try {
+        const r = await fetch('/api/claude-projects-folders');
+        const d = await r.json();
+        this.importDialog.folders = d.folders || [];
+      } catch (e) { console.error(e); }
+    },
+
+    async loadImportSessions() {
+      if (!this.importDialog.selectedFolder) {
+        this.importDialog.sessions = [];
+        this.importDialog.selected = [];
+        return;
+      }
+      this.importDialog.loading = true;
+      this.importDialog.selected = [];
+      try {
+        const url = '/api/claude-projects-folder/' + encodeURIComponent(this.importDialog.selectedFolder)
+                  + '/sessions?project=' + encodeURIComponent(this.projectName);
+        const r = await fetch(url);
+        const d = await r.json();
+        this.importDialog.sessions = d.sessions || [];
+        // по умолчанию — выделяем все ещё не импортированные
+        this.importSelectPending();
+      } catch (e) {
+        console.error(e);
+        toast('error', 'Ошибка загрузки списка сессий: ' + e.message);
+      } finally {
+        this.importDialog.loading = false;
+      }
+    },
+
+    importSelectAll(flag) {
+      if (flag) {
+        this.importDialog.selected = this.importDialog.sessions
+          .filter(s => !s.already_imported).map(s => s.sid);
+      } else {
+        this.importDialog.selected = [];
+      }
+    },
+
+    importSelectPending() {
+      this.importDialog.selected = this.importDialog.sessions
+        .filter(s => !s.already_imported).map(s => s.sid);
+    },
+
+    async confirmImport() {
+      const selected = this.importDialog.selected;
+      if (selected.length === 0) return;
+      const paths = this.importDialog.sessions
+        .filter(s => selected.includes(s.sid))
+        .map(s => s.path);
+      this.importDialog.busy = true;
+      try {
+        const r = await fetch('/api/import-sessions', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            project: this.projectName,
+            session_paths: paths,
+            trigger_ingest: this.importDialog.triggerIngest,
+          }),
+        });
+        const d = await r.json();
+        if (r.status === 409) {
+          toast('warn', 'Импорт уже запущен. Дождись его завершения и попробуй снова.', 6000);
+          return;
+        }
+        if (!r.ok) { toast('error', 'Ошибка: ' + (d.error || r.status)); return; }
+        this.importDialog.show = false;
+        const msg = d.trigger_ingest
+          ? `Запущен импорт ${d.queued} сессий с последующей обработкой. Следи за лентой «История операций» — там будут появляться задачи одна за другой.`
+          : `Импорт ${d.queued} сессий запущен в фоне. Через несколько секунд они появятся в разделе «📥 Сохранённые диалоги».`;
+        toast('info', msg);
+        // Рефреш через 2 сек чтобы подхватить свежие файлы
+        setTimeout(() => this.refresh(), 2000);
+      } catch (e) {
+        toast('error', 'Ошибка: ' + e.message);
+      } finally {
+        this.importDialog.busy = false;
+      }
+    },
+  };
+}
+</script>
+{% endblock %}

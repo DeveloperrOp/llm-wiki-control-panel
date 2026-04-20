@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "vault_base": "C:/path/to/OBSIDIAN",
+  "mappings": [
+    {
+      "name": "My Project",
+      "cwd_patterns": [
+        "*my-project*",
+        "*/My Project/*"
+      ],
+      "vault_root": "C:/path/to/OBSIDIAN/My Project",
+      "auto_ingest": false,
+      "lint_schedule": null,
+      "context_limit": 10000
+    }
+  ],
+  "unassigned_root": "C:/path/to/OBSIDIAN/.unassigned"
+}

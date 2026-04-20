@@ -1,0 +1,137 @@
+{% extends "base.html" %}
+
+{% block title %}Помощь · Control Panel{% endblock %}
+
+{% block head_extra %}
+<script src="https://cdn.jsdelivr.net/npm/marked@14.1.3/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.7/dist/purify.min.js"></script>
+<style>
+  .guide { max-width: 860px; margin: 0 auto; }
+  .guide h1 { font-size: 2rem; font-weight: 700; margin: 1.5rem 0 1rem; border-bottom: 1px solid #e5e7eb; padding-bottom: 0.5rem; }
+  .guide h2 { font-size: 1.5rem; font-weight: 600; margin: 1.75rem 0 0.75rem; padding-top: 0.5rem; border-top: 1px solid #f3f4f6; }
+  .guide h3 { font-size: 1.2rem; font-weight: 600; margin: 1.25rem 0 0.5rem; }
+  .guide h4 { font-size: 1.05rem; font-weight: 600; margin: 1rem 0 0.4rem; }
+  .guide p { margin: 0.6rem 0; line-height: 1.65; }
+  .guide ul, .guide ol { margin: 0.6rem 0 0.6rem 1.5rem; line-height: 1.65; }
+  .guide ul li { list-style: disc; margin: 0.25rem 0; }
+  .guide ol li { list-style: decimal; margin: 0.25rem 0; }
+  .guide code { background: #f3f4f6; padding: 0.12rem 0.35rem; border-radius: 3px; font-size: 0.88em; font-family: 'SF Mono', 'Menlo', 'Monaco', 'Consolas', monospace; }
+  .guide pre { background: #1e293b; color: #e2e8f0; padding: 1rem; border-radius: 0.5rem; overflow-x: auto; margin: 0.75rem 0; font-size: 0.85rem; }
+  .guide pre code { background: transparent; color: inherit; padding: 0; }
+  .guide strong { font-weight: 600; }
+  .guide blockquote { border-left: 3px solid #cbd5e1; padding-left: 0.8rem; margin: 0.75rem 0; color: #64748b; font-style: italic; }
+  .guide a { color: #2563eb; text-decoration: underline; text-underline-offset: 2px; }
+  .guide a:hover { color: #1d4ed8; }
+  .guide hr { margin: 1.5rem 0; border: 0; border-top: 1px solid #e5e7eb; }
+  .guide table { border-collapse: collapse; margin: 0.75rem 0; width: 100%; font-size: 0.9rem; }
+  .guide th, .guide td { border: 1px solid #e5e7eb; padding: 0.5rem 0.75rem; text-align: left; }
+  .guide th { background: #f9fafb; font-weight: 600; }
+
+  /* TOC */
+  .toc { position: sticky; top: 1rem; max-height: calc(100vh - 2rem); overflow-y: auto; padding-right: 0.5rem; }
+  .toc-item { display: block; padding: 0.2rem 0.4rem; font-size: 0.85rem; color: #64748b; text-decoration: none; border-left: 2px solid transparent; }
+  .toc-item:hover { color: #2563eb; }
+  .toc-item.active { color: #2563eb; border-left-color: #2563eb; background: #eff6ff; }
+  .toc-h2 { padding-left: 0.4rem; font-weight: 500; }
+  .toc-h3 { padding-left: 1.2rem; font-size: 0.8rem; }
+</style>
+{% endblock %}
+
+{% block breadcrumbs %}
+<span class="text-gray-300 ml-2">/</span>
+<span class="text-sm text-gray-700 font-medium">❔ Помощь</span>
+{% endblock %}
+
+{% block content %}
+<div x-data="helpPage()" x-init="init()">
+
+  <div class="grid md:grid-cols-4 gap-6">
+
+    <!-- Sidebar TOC -->
+    <aside class="md:col-span-1 hidden md:block">
+      <div class="toc" id="toc">
+        <p class="text-xs font-semibold text-gray-500 uppercase mb-2">Оглавление</p>
+        <template x-for="h in toc" :key="h.id">
+          <a :href="'#' + h.id"
+             class="toc-item"
+             :class="[h.level === 2 ? 'toc-h2' : (h.level === 3 ? 'toc-h3' : ''), activeId === h.id ? 'active' : '']"
+             x-text="h.text"></a>
+        </template>
+      </div>
+    </aside>
+
+    <!-- Content -->
+    <article class="md:col-span-3">
+      <template x-if="loading">
+        <p class="text-sm text-gray-500">Загрузка инструкции…</p>
+      </template>
+
+      <template x-if="!loading && sourcePath">
+        <p class="text-xs text-gray-500 mb-4">
+          Источник: <code x-text="sourcePath"></code>
+          · <a :href="'obsidian://open?path=' + encodeURIComponent(sourcePath)" class="text-blue-600 hover:underline">Открыть в Obsidian</a>
+        </p>
+      </template>
+
+      <div class="guide" x-html="html"></div>
+    </article>
+
+  </div>
+
+</div>
+
+<script>
+function helpPage() {
+  return {
+    loading: true,
+    html: '',
+    sourcePath: '',
+    toc: [],
+    activeId: '',
+
+    async init() {
+      try {
+        const r = await fetch('/api/guide');
+        const d = await r.json();
+        this.sourcePath = d.source_path || '';
+        const raw = d.content || '# Гайд не найден';
+        // marked.js → HTML
+        const html = marked.parse(raw);
+        this.html = DOMPurify.sanitize(html);
+        // Строим TOC после рендера
+        this.$nextTick(() => this.buildTOC());
+      } catch (e) {
+        // Пропускаем через DOMPurify: e.message теоретически может содержать
+        // HTML (fetch из странного прокси), а x-html делает innerHTML.
+        const safeMsg = DOMPurify.sanitize(String(e.message || e));
+        this.html = '<p class="text-red-600">Ошибка загрузки гайда: ' + safeMsg + '</p>';
+      } finally {
+        this.loading = false;
+      }
+    },
+
+    buildTOC() {
+      const headings = document.querySelectorAll('.guide h1, .guide h2, .guide h3');
+      const toc = [];
+      headings.forEach((h, idx) => {
+        const id = 'section-' + idx + '-' + (h.textContent || '').replace(/\s+/g, '-').replace(/[^a-zA-Zа-яА-Я0-9-]/g, '').toLowerCase().slice(0, 40);
+        h.id = id;
+        const level = parseInt(h.tagName.replace('H', ''), 10);
+        toc.push({ id, level, text: h.textContent.trim() });
+      });
+      this.toc = toc;
+
+      // Highlight active section on scroll
+      const observer = new IntersectionObserver((entries) => {
+        entries.forEach(e => {
+          if (e.isIntersecting) {
+            this.activeId = e.target.id;
+          }
+        });
+      }, { rootMargin: '-10% 0px -80% 0px' });
+      headings.forEach(h => observer.observe(h));
+    },
+  };
+}
+</script>
+{% endblock %}
